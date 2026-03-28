@@ -795,12 +795,14 @@ export function AnalyzePage() {
         ? "bg-[#fff5e5] text-[#9a5a00]"
         : "bg-[#fff1f1] text-[#8c1d18]";
 
+  const showDemoGuide = sourceType === null && analysisState === "idle";
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-28 lg:pb-0">
       <SurfaceCard
-        eyebrow="Block 4"
+        eyebrow="Block 9"
         title="Capture and analyze testbed"
-        description="This page now sits across Blocks 3-4: it can run live pose diagnostics, upload training clips, and record a camera session into a reusable analysis clip before the full Gemini pipeline ships." 
+        description="This page now acts like the demo surface: capture or upload a clip, run pose analysis, review coaching feedback, then ask follow-up questions without storing the raw video." 
       >
         <div className="flex flex-wrap items-center gap-4">
           <button
@@ -874,6 +876,40 @@ export function AnalyzePage() {
           </p>
         </div>
       </SurfaceCard>
+
+      {showDemoGuide ? (
+        <SurfaceCard
+          eyebrow="Demo Flow"
+          title="Quick start"
+          description="This is the fastest path for a booth demo or self-test when nobody wants to hunt through the page first."
+        >
+          <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+            <div className="grid gap-3 sm:grid-cols-3">
+              {[
+                ["1", "Load a clip", "Upload a training clip or start the live camera first."],
+                ["2", "Run analysis", "Let the pose window build, then click Run analysis."],
+                ["3", "Review and chat", "Use the scorecards, progress panel, and coaching chat below."],
+              ].map(([step, title, text]) => (
+                <div key={step} className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--accent-strong)] text-sm font-semibold text-white">
+                    {step}
+                  </div>
+                  <p className="mt-4 text-sm font-semibold text-[var(--ink)]">{title}</p>
+                  <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{text}</p>
+                </div>
+              ))}
+            </div>
+            <div className="rounded-[24px] bg-[linear-gradient(145deg,#eef4ff_0%,#f7fbf7_100%)] px-5 py-5 shadow-[var(--shadow-1)]">
+              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--accent-strong)]">Best capture setup</p>
+              <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--ink)]">
+                <li>- Keep the full body visible if possible, especially hips, knees, and ankles.</li>
+                <li>- A clean side view works best for squat and hinge demos.</li>
+                <li>- If the clip is imperfect, the system can still attempt best-effort analysis before rejecting it.</li>
+              </ul>
+            </div>
+          </div>
+        </SurfaceCard>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
         <SurfaceCard
@@ -1160,6 +1196,38 @@ export function AnalyzePage() {
             ) : null}
           </div>
         </SurfaceCard>
+      </div>
+
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/70 bg-[color:var(--surface-1)]/92 px-4 py-3 shadow-[0_-18px_40px_rgba(75,99,155,0.14)] backdrop-blur-xl lg:hidden">
+        <div className="mx-auto flex max-w-7xl items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              void startCamera();
+            }}
+            disabled={cameraState === "starting" || cameraState === "live"}
+            className="flex-1 rounded-full bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white shadow-[var(--shadow-1)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Camera
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex-1 rounded-full border border-[var(--outline)] bg-white px-4 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)]"
+          >
+            Clip
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void runAnalysis();
+            }}
+            disabled={!canRunAnalysis}
+            className="flex-1 rounded-full bg-[var(--accent-strong)] px-4 py-3 text-sm font-semibold text-white shadow-[var(--shadow-1)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Analyze
+          </button>
+        </div>
       </div>
     </div>
   );
