@@ -5,19 +5,41 @@ import {
   type PoseLandmarkerResult,
 } from "@mediapipe/tasks-vision";
 import { SurfaceCard } from "@/components/ui/surface-card";
+import { buildAnalyzePayload, type BufferedPoseFrame } from "@/lib/analysis-payload";
 import { getLiveAngles } from "@/lib/angles";
 import { detectCameraAngle } from "@/lib/camera-angle";
 import { drawPoseOverlay } from "@/lib/pose-draw";
 import { evaluateFrameQuality, summarizePoseWindow, type PoseLandmarkPoint } from "@/lib/pose";
 
-type BufferedPoseFrame = {
-  detectedAt: number;
-  visibleLandmarks: number;
-  landmarks: PoseLandmarkPoint[];
-};
-
 const SAMPLE_INTERVAL_MS = 200;
 const MAX_BUFFERED_FRAMES = 30;
+
+function getSupportedRecordingMimeType() {
+  if (typeof MediaRecorder === "undefined") {
+    return null;
+  }
+
+  const candidates = [
+    "video/mp4;codecs=h264",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+  ];
+
+  return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? "";
+}
+
+function getRecordingExtension(mimeType: string) {
+  if (mimeType.includes("mp4")) {
+    return "mp4";
+  }
+
+  if (mimeType.includes("ogg")) {
+    return "ogv";
+  }
+
+  return "webm";
+}
 
 function normalizeLandmarks(result: PoseLandmarkerResult) {
   return (result.landmarks[0] ?? []).map((landmark) => ({
@@ -74,9 +96,13 @@ export function AnalyzePage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const shouldLoadRecordingRef = useRef(false);
   const clipUrlRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
+  const recordingTimerRef = useRef<number | null>(null);
   const processingRef = useRef(false);
 
   const [cameraState, setCameraState] = useState<"idle" | "starting" | "live" | "error">("idle");
@@ -92,6 +118,12 @@ export function AnalyzePage() {
   const [sourceType, setSourceType] = useState<"camera" | "clip" | null>(null);
   const [clipName, setClipName] = useState<string | null>(null);
   const [clipState, setClipState] = useState<"idle" | "loading" | "playing" | "paused" | "ended" | "error">("idle");
+  const [recordingState, setRecordingState] = useState<"idle" | "recording" | "processing" | "error">("idle");
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [recordedClipName, setRecordedClipName] = useState<string | null>(null);
+
+  const recordingSupported = typeof MediaRecorder !== "undefined";
 
   useEffect(() => {
     let cancelled = false;
@@ -135,6 +167,10 @@ export function AnalyzePage() {
         window.clearInterval(timerRef.current);
       }
 
+      if (recordingTimerRef.current) {
+        window.clearInterval(recordingTimerRef.current);
+      }
+
       streamRef.current?.getTracks().forEach((track) => track.stop());
       if (clipUrlRef.current) {
         URL.revokeObjectURL(clipUrlRef.current);
@@ -151,6 +187,19 @@ export function AnalyzePage() {
   const windowQuality = useMemo(
     () => summarizePoseWindow(bufferedFrames.map((frame) => evaluateFrameQuality(frame.landmarks))),
     [bufferedFrames],
+  );
+  const analyzePayload = useMemo(
+    () =>
+      buildAnalyzePayload({
+        sourceType,
+        clipName,
+        bufferedFrames,
+        frameQuality,
+        windowQuality,
+        cameraAngle,
+        liveAngles,
+      }),
+    [bufferedFrames, cameraAngle, clipName, frameQuality, liveAngles, sourceType, windowQuality],
   );
 
   useEffect(() => {
@@ -214,6 +263,23 @@ export function AnalyzePage() {
     setBufferedFrames([]);
   }
 
+  function clearRecordingTimer() {
+    if (recordingTimerRef.current) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  }
+
+  function resetRecordingState() {
+    clearRecordingTimer();
+    shouldLoadRecordingRef.current = false;
+    recordingChunksRef.current = [];
+    mediaRecorderRef.current = null;
+    setRecordingState("idle");
+    setRecordingDuration(0);
+    setRecordingError(null);
+  }
+
   function stopSampling() {
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
@@ -255,6 +321,13 @@ export function AnalyzePage() {
   }
 
   function stopActiveInput(nextMessage?: string) {
+    shouldLoadRecordingRef.current = false;
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+
+    clearRecordingTimer();
     stopSampling();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -265,6 +338,7 @@ export function AnalyzePage() {
     setClipName(null);
     setCameraState("idle");
     setClipState("idle");
+    resetRecordingState();
 
     const canvas = overlayCanvasRef.current;
     if (canvas) {
@@ -284,6 +358,7 @@ export function AnalyzePage() {
       setSourceType("camera");
       setClipState("idle");
       setPipelineError(null);
+      setRecordingError(null);
       setStatusMessage("Requesting camera permission...");
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -330,6 +405,7 @@ export function AnalyzePage() {
       setSourceType("clip");
       setClipName(file.name);
       setClipState("loading");
+      setRecordingState("idle");
       setPipelineError(null);
       setStatusMessage("Loading training clip...");
 
@@ -360,6 +436,112 @@ export function AnalyzePage() {
       setPipelineError(message);
       setStatusMessage(message);
     }
+  }
+
+  async function startRecording() {
+    if (!recordingSupported) {
+      const message = "This browser does not support in-app recording yet.";
+      setRecordingError(message);
+      setStatusMessage(message);
+      return;
+    }
+
+    if (!streamRef.current || sourceType !== "camera" || cameraState !== "live") {
+      const message = "Start the live camera first, then record a clip from the same session.";
+      setRecordingError(message);
+      setStatusMessage(message);
+      return;
+    }
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      return;
+    }
+
+    try {
+      const mimeType = getSupportedRecordingMimeType();
+      const mediaRecorder = mimeType
+        ? new MediaRecorder(streamRef.current, { mimeType })
+        : new MediaRecorder(streamRef.current);
+
+      mediaRecorderRef.current = mediaRecorder;
+      recordingChunksRef.current = [];
+      shouldLoadRecordingRef.current = false;
+      setRecordingError(null);
+      setRecordedClipName(null);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onerror = () => {
+        const message = "Recording failed before the clip could be saved.";
+        clearRecordingTimer();
+        setRecordingState("error");
+        setRecordingError(message);
+        setStatusMessage(message);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const nextChunks = [...recordingChunksRef.current];
+        const nextMimeType = mediaRecorder.mimeType || mimeType || "video/webm";
+        const shouldLoadRecording = shouldLoadRecordingRef.current;
+
+        clearRecordingTimer();
+        mediaRecorderRef.current = null;
+        recordingChunksRef.current = [];
+        shouldLoadRecordingRef.current = false;
+
+        if (nextChunks.length === 0) {
+          const message = "Recording stopped, but no clip data was captured.";
+          setRecordingState("error");
+          setRecordingError(message);
+          setStatusMessage(message);
+          return;
+        }
+
+        const extension = getRecordingExtension(nextMimeType);
+        const fileName = `recording-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+        const file = new File(nextChunks, fileName, { type: nextMimeType });
+
+        setRecordedClipName(fileName);
+
+        if (!shouldLoadRecording) {
+          setRecordingState("idle");
+          return;
+        }
+
+        setRecordingState("processing");
+        setStatusMessage("Recording saved. Loading the captured clip into analysis preview...");
+        await handleTrainingClip(file);
+        setRecordingState("idle");
+      };
+
+      mediaRecorder.start(1000);
+      setRecordingState("recording");
+      setRecordingDuration(0);
+      setStatusMessage("Recording in progress. Stop when you want to analyze the captured clip.");
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingDuration((seconds) => seconds + 1);
+      }, 1000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to start recording";
+      setRecordingState("error");
+      setRecordingError(message);
+      setStatusMessage(message);
+    }
+  }
+
+  function stopRecording() {
+    if (!mediaRecorderRef.current || mediaRecorderRef.current.state === "inactive") {
+      return;
+    }
+
+    shouldLoadRecordingRef.current = true;
+    setRecordingState("processing");
+    setStatusMessage("Finishing recording and preparing the captured clip...");
+    mediaRecorderRef.current.stop();
   }
 
   function stopCamera() {
@@ -459,9 +641,9 @@ export function AnalyzePage() {
   return (
     <div className="space-y-6">
       <SurfaceCard
-        eyebrow="Block 3"
-        title="Pose pipeline testbed"
-        description="This page is still a diagnostics path. It should visibly process clips or live camera input, draw an overlay, and surface pose metrics before we move on to rep detection and saved analysis." 
+        eyebrow="Block 4"
+        title="Capture and analyze testbed"
+        description="This page now sits across Blocks 3-4: it can run live pose diagnostics, upload training clips, and record a camera session into a reusable analysis clip before the full Gemini pipeline ships." 
       >
         <div className="flex flex-wrap items-center gap-4">
           <button
@@ -490,6 +672,30 @@ export function AnalyzePage() {
           </label>
           <button
             type="button"
+            onClick={() => {
+              void startRecording();
+            }}
+            disabled={
+              !recordingSupported ||
+              sourceType !== "camera" ||
+              cameraState !== "live" ||
+              recordingState === "recording" ||
+              recordingState === "processing"
+            }
+            className="rounded-full border border-[var(--outline)] bg-[var(--surface-accent)] px-5 py-3 text-sm font-semibold text-[var(--accent-strong)] shadow-[var(--shadow-1)] transition hover:brightness-98 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Start recording
+          </button>
+          <button
+            type="button"
+            onClick={stopRecording}
+            disabled={recordingState !== "recording"}
+            className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Stop recording
+          </button>
+          <button
+            type="button"
             onClick={stopCamera}
             disabled={sourceType === null}
             className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -497,7 +703,7 @@ export function AnalyzePage() {
             Stop
           </button>
           <p className="text-sm text-[var(--ink-soft)]">
-            Best test: full body in frame, 6-8 feet back, neutral background, decent light, ideally a clean side view. Training clips should also work.
+            Best test: full body in frame, 6-8 feet back, neutral background, decent light, ideally a clean side view. You can record from the live camera, then review the captured clip here.
           </p>
         </div>
       </SurfaceCard>
@@ -550,7 +756,11 @@ export function AnalyzePage() {
               />
             </div>
             <div className="absolute left-4 top-4 rounded-full bg-black/55 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-white">
-              {sourceType === "clip" ? clipState : cameraState}
+              {recordingState === "recording"
+                ? `recording ${recordingDuration}s`
+                : sourceType === "clip"
+                  ? clipState
+                  : cameraState}
             </div>
             <div className="absolute bottom-4 left-4 rounded-[20px] bg-black/55 px-4 py-3 text-sm text-white backdrop-blur">
               {visibleLandmarks > 0 ? `${visibleLandmarks} landmarks visible` : "No pose landmarks yet"}
@@ -579,6 +789,8 @@ export function AnalyzePage() {
               ["Pipeline", pipelineState],
               ["Source", sourceType ?? "none"],
               [sourceType === "clip" ? "Clip" : "Camera", sourceType === "clip" ? clipState : cameraState],
+              ["Recording", recordingState],
+              ["Recording seconds", String(recordingDuration)],
               ["Analysis mode", frameQuality.analysisReadiness],
               ["Frames processed", String(framesProcessed)],
               ["Visible landmarks", String(visibleLandmarks)],
@@ -600,7 +812,13 @@ export function AnalyzePage() {
                 width ratio: {cameraAngle.widthRatio ?? "-"} | depth ratio: {cameraAngle.depthRatio ?? "-"}
               </p>
               {clipName ? <p className="mt-2">clip: {clipName}</p> : null}
+              {recordedClipName ? <p className="mt-2">last recording: {recordedClipName}</p> : null}
             </div>
+            {recordingError ? (
+              <div className="rounded-[24px] border border-[#f0b8b8] bg-[#fff1f1] px-4 py-3 text-sm text-[#8c1d18]">
+                {recordingError}
+              </div>
+            ) : null}
             {frameQuality.issues.length > 0 ? (
               <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
                 <p className="font-medium text-[var(--ink)]">Quick fixes</p>
@@ -633,6 +851,18 @@ export function AnalyzePage() {
                 </p>
               </div>
             ))}
+          </div>
+        </SurfaceCard>
+
+        <SurfaceCard
+          eyebrow="Analyze Payload"
+          title="Gemini handoff preview"
+          description="This is the structured payload we can pass into the future analysis action once Convex `analyze.ts` exists."
+        >
+          <div className="rounded-[24px] bg-[var(--surface-2)] p-4">
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-6 text-[var(--ink-soft)]">
+              {JSON.stringify(analyzePayload, null, 2)}
+            </pre>
           </div>
         </SurfaceCard>
 
