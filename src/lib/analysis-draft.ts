@@ -67,6 +67,15 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
   const whatToFix: string[] = [];
   const risks: string[] = [];
   const exerciseProfile = resolveExerciseMovementProfile(payload.userContext.exerciseName ?? payload.clipName);
+  const isUpperBodyPattern = exerciseProfile.pattern === "upper";
+  const strongVisibility = payload.frameStats.averageVisibleLandmarks >= 18;
+  const cleanHighConfidenceClip =
+    payload.decision === "full"
+    && payload.confidence === "high"
+    && strongVisibility
+    && payload.quality.currentIssues.length === 0
+    && payload.quality.windowIssues.length === 0;
+  const repTelemetryLimited = isUpperBodyPattern && cleanHighConfidenceClip && payload.repStats.detectedRepCount === 0;
   const primaryMetricValue = payload.repStats.averageBottomPrimaryMetricValue;
   const depthIndicator = exerciseProfile.primaryMetric === "hip_flexion"
     ? primaryMetricValue ?? payload.motionSummary.primaryHip
@@ -79,11 +88,13 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
       : null;
 
   const symmetryScore =
-    symmetryGap === null ? 60 : clampScore(100 - symmetryGap * 2.5);
+    symmetryGap === null ? (isUpperBodyPattern ? 78 : 60) : clampScore(100 - symmetryGap * 2.5);
+  const trunkLeanTarget = exerciseProfile.pattern === "hinge" ? 45 : isUpperBodyPattern ? 12 : 35;
+  const trunkLeanPenalty = exerciseProfile.pattern === "hinge" ? 2.2 : isUpperBodyPattern ? 1.25 : 2.2;
   const trunkLeanScore =
     payload.motionSummary.trunkLean === null
       ? 65
-      : clampScore(100 - Math.max(0, Math.abs(payload.motionSummary.trunkLean - (exerciseProfile.pattern === "hinge" ? 45 : 35)) * 2.2));
+      : clampScore(100 - Math.max(0, Math.abs(payload.motionSummary.trunkLean - trunkLeanTarget) * trunkLeanPenalty));
   const romScore =
     depthIndicator === null
       ? 60
@@ -96,8 +107,10 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
   const fatigueManagementScore =
     payload.repStats.detectedRepCount >= 3
       ? (payload.decision === "best_effort" ? 58 : 74)
-      : (payload.decision === "best_effort" ? 50 : 66);
-  const overall = clampScore(
+      : repTelemetryLimited
+        ? 78
+        : (payload.decision === "best_effort" ? 50 : 66);
+  let overall = clampScore(
     ((romScore * 0.3) +
       (tensionProfileScore * 0.25) +
       (tempoScore * 0.2) +
@@ -105,14 +118,38 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
       (fatigueManagementScore * 0.1)) * (payload.decision === "best_effort" ? 0.9 : 1),
   );
 
+  if (cleanHighConfidenceClip) {
+    overall = Math.max(overall, isUpperBodyPattern ? 82 : 78);
+  }
+
   if (payload.cameraAngle.label === "sagittal") {
-    whatYoureDoingWell.push("The camera setup is close to a useful side view for lower-body form checks.");
+    whatYoureDoingWell.push(
+      isUpperBodyPattern
+        ? "The side-view framing is useful for tracking torso position and pull mechanics."
+        : "The camera setup is close to a useful side view for lower-body form checks.",
+    );
   } else if (payload.cameraAngle.label === "coronal") {
-    whatYoureDoingWell.push("The clip still captures enough front-view information to estimate symmetry cues.");
+    whatYoureDoingWell.push(
+      isUpperBodyPattern
+        ? "The front-view framing still gives some visibility into upper-body balance and bar path symmetry."
+        : "The clip still captures enough front-view information to estimate symmetry cues.",
+    );
   }
 
   if (payload.frameStats.averageVisibleLandmarks >= 20) {
     whatYoureDoingWell.push("Most frames keep a good portion of the body visible, which supports more stable scoring.");
+  }
+
+  if (isUpperBodyPattern && payload.motionSummary.trunkLean !== null && payload.motionSummary.trunkLean >= 4 && payload.motionSummary.trunkLean <= 20) {
+    whatYoureDoingWell.push("Your torso position stays steady, which gives the pull a stable base and keeps tension where it should be.");
+  }
+
+  if (isUpperBodyPattern && depthIndicator !== null && Math.abs(depthIndicator - exerciseProfile.romIdeal) <= 12) {
+    whatYoureDoingWell.push("Your setup angle looks repeatable, so the row starts from a consistent position instead of drifting rep to rep.");
+  }
+
+  if (repTelemetryLimited) {
+    whatYoureDoingWell.push("Even without segmented reps, the visible motion pattern looks clean enough for a confident first-pass read.");
   }
 
   if (payload.repStats.detectedRepCount >= 2) {
@@ -121,41 +158,61 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
 
   if (payload.decision === "best_effort") {
     whatToFix.push("This read is lower confidence because the clip is partially cropped or occluded.");
-    pushCue(cues, "Re-record from slightly farther back so Gemini can see the full lower body for every rep.", "high");
+    pushCue(
+      cues,
+      isUpperBodyPattern
+        ? "Re-record from slightly farther back so Gemini can see the full working side and torso for every rep."
+        : "Re-record from slightly farther back so Gemini can see the full lower body for every rep.",
+      "high",
+    );
   }
 
   if (payload.motionSummary.trunkLean !== null && payload.motionSummary.trunkLean > (exerciseProfile.pattern === "hinge" ? 72 : 55)) {
     whatToFix.push("Your torso angle looks aggressive, which can shift the movement away from the intended pattern.");
     pushCue(cues, exerciseProfile.pattern === "hinge"
       ? "Keep the hinge controlled so the torso angle does not run away faster than the hips travel back."
+      : isUpperBodyPattern
+        ? "Stay braced and keep the torso angle more stable so the row does not turn into a shrug or body-English rep."
       : "Try to keep the torso more stacked so the rep does not fold forward early.", "high");
     risks.push("Excess forward trunk angle can make load distribution harder to judge and may increase low-back demand.");
   } else if (payload.motionSummary.trunkLean !== null && payload.motionSummary.trunkLean < (exerciseProfile.pattern === "hinge" ? 20 : 15)) {
-    pushCue(cues, "A little more controlled forward torso travel may help you reach the intended bottom position.", "medium");
+    pushCue(
+      cues,
+      isUpperBodyPattern
+        ? "Set the torso angle deliberately before the pull so the working muscles stay loaded through the rep."
+        : "A little more controlled forward torso travel may help you reach the intended bottom position.",
+      "medium",
+    );
   }
 
-  if (symmetryGap !== null && symmetryGap > 15) {
+  if (!isUpperBodyPattern && symmetryGap !== null && symmetryGap > 15) {
     whatToFix.push("Left-right knee behavior looks uneven across the visible frames.");
     pushCue(cues, "Watch for one side dropping or extending faster than the other.", "high");
     risks.push("Asymmetry across visible frames suggests the set may be shifting more load to one side.");
-  } else if (symmetryGap !== null && symmetryGap <= 8) {
+  } else if (!isUpperBodyPattern && symmetryGap !== null && symmetryGap <= 8) {
     whatYoureDoingWell.push("The visible knee angles look relatively balanced side to side.");
   }
 
   if (depthIndicator !== null && depthIndicator > exerciseProfile.shallowThreshold) {
     whatToFix.push(exerciseProfile.pattern === "hinge"
       ? "The hinge range looks short in the visible frames, so the posterior-chain stretch may be limited."
-      : "The movement looks shallow in the visible frames, so range of motion may be limited.");
+      : isUpperBodyPattern
+        ? "The torso setup looks a bit shallow or upright, which can reduce how consistently the upper back stays loaded."
+        : "The movement looks shallow in the visible frames, so range of motion may be limited.");
     pushCue(cues, exerciseProfile.pattern === "hinge"
       ? "If the goal is hamstrings or erectors, reach a deeper hinge without losing control or visibility."
+      : isUpperBodyPattern
+        ? "Set the torso angle first, then pull through the same path each rep so the upper back stays under tension."
       : "If the goal is a full rep, sit deeper while keeping the same balance and control.", "medium");
   } else if (depthIndicator !== null && depthIndicator <= exerciseProfile.romIdeal) {
     whatYoureDoingWell.push(exerciseProfile.pattern === "hinge"
       ? "The visible frames show a more meaningful hinge depth for posterior-chain work."
+      : isUpperBodyPattern
+        ? "The visible frames suggest a more deliberate torso setup for upper-back work."
       : "You are reaching a deeper knee position in the captured frames.");
   }
 
-  if (payload.repStats.detectedRepCount === 0) {
+  if (payload.repStats.detectedRepCount === 0 && !repTelemetryLimited) {
     whatToFix.push("No clean reps were segmented yet, so this read relies on general motion patterns instead of rep-by-rep evidence.");
   } else if (payload.repStats.averageRepDurationMs !== null && payload.repStats.averageRepDurationMs < 900) {
     pushCue(cues, "Slow the rep down slightly so the bottom position and transition are easier to assess and control.", "medium");
@@ -184,21 +241,25 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
     accepted: true,
     mode: payload.decision,
     confidence: payload.confidence,
-      summary:
-        payload.decision === "best_effort"
-          ? "Best-effort analysis generated from a partially usable clip window."
-          : "Standard analysis draft generated from the buffered pose window.",
+    summary:
+      payload.decision === "best_effort"
+        ? "Best-effort analysis generated from a partially usable clip window."
+        : "Standard analysis draft generated from the buffered pose window.",
     basicAnalysis: {
       summary:
         payload.decision === "best_effort"
           ? "This draft is useful, but it should be delivered with crop and confidence warnings."
-          : "The clip has enough visible data for a normal first-pass technique summary.",
+          : cleanHighConfidenceClip
+            ? "The clip quality is strong enough for a confident first-pass technique read."
+            : "The clip has enough visible data for a normal first-pass technique summary.",
       whatYoureDoingWell,
       whatToFix,
     },
     nerdAnalysis: {
       summary: exerciseProfile.pattern === "hinge"
         ? "Posterior-chain pattern quality is being estimated from the visible hinge depth, trunk angle, and clip quality window."
+        : isUpperBodyPattern
+          ? "Upper-body pattern quality is being estimated from visible torso position, pull setup, and clip quality window."
         : "Lower-body pattern quality is being estimated from visible joint depth, trunk position, and clip quality window.",
       movementDiagnosis: [
         `Primary metric: ${payload.repStats.primaryMetric}`,

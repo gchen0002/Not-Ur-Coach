@@ -5,6 +5,8 @@ import type { CompactAnalysisEvidence, LivePromptBudget } from "../src/lib/analy
 import type { ExerciseCatalogEntry } from "../src/lib/exercise-intake-contract";
 import type { LiveCoachContextRequest, LiveCoachContextResult } from "../src/lib/live-session-contract";
 
+const LIVE_CONTEXT_MODEL = "gemini-3-flash-preview";
+
 const requestValidator = v.object({
   userHint: v.optional(v.string()),
   frameDataUrls: v.optional(v.array(v.string())),
@@ -157,7 +159,7 @@ export const prepareLiveCoachContext = actionGeneric({
       }
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash",
+        model: LIVE_CONTEXT_MODEL,
         contents: [{ role: "user", parts }],
       });
       const parsed = JSON.parse(extractJsonObject(response.text ?? "")) as {

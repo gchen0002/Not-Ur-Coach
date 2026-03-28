@@ -4,9 +4,23 @@ import { v } from "convex/values";
 import type { AnalysisDraft, AnalysisRunResult, AnalyzePayload, CompactAnalysisInput } from "../src/lib/analysis-contract";
 import { createAnalysisDraft } from "../src/lib/analysis-draft";
 
+const ANALYSIS_MODEL = "gemini-3-flash-preview";
+
 const analyzePayloadValidator = v.object({
   sourceType: v.union(v.literal("camera"), v.literal("clip"), v.null()),
   clipName: v.union(v.string(), v.null()),
+  userContext: v.object({
+    exerciseName: v.union(v.string(), v.null()),
+    targetMuscles: v.array(v.string()),
+    sessionIntent: v.union(v.literal("form_check"), v.literal("work_set"), v.literal("demo")),
+    resistanceType: v.union(
+      v.literal("bodyweight"),
+      v.literal("free_weight"),
+      v.literal("machine"),
+      v.literal("unknown"),
+    ),
+    notes: v.union(v.string(), v.null()),
+  }),
   decision: v.union(v.literal("full"), v.literal("best_effort"), v.literal("reject")),
   recommendation: v.string(),
   confidence: v.union(v.literal("high"), v.literal("medium"), v.literal("low")),
@@ -37,6 +51,8 @@ const analyzePayloadValidator = v.object({
   motionSummary: v.object({
     dominantSide: v.union(v.literal("left"), v.literal("right"), v.null()),
     trunkLean: v.union(v.number(), v.null()),
+    primaryKnee: v.union(v.number(), v.null()),
+    primaryHip: v.union(v.number(), v.null()),
     leftKnee: v.union(v.number(), v.null()),
     rightKnee: v.union(v.number(), v.null()),
     leftHip: v.union(v.number(), v.null()),
@@ -46,7 +62,8 @@ const analyzePayloadValidator = v.object({
     detectedRepCount: v.number(),
     averageRepDurationMs: v.union(v.number(), v.null()),
     averageBottomKneeAngle: v.union(v.number(), v.null()),
-    primaryMetric: v.literal("knee_flexion"),
+    averageBottomPrimaryMetricValue: v.union(v.number(), v.null()),
+    primaryMetric: v.union(v.literal("knee_flexion"), v.literal("hip_flexion")),
   }),
   reps: v.array(v.object({
     repNumber: v.number(),
@@ -55,6 +72,7 @@ const analyzePayloadValidator = v.object({
     endMs: v.number(),
     durationMs: v.number(),
     bottomKneeAngle: v.union(v.number(), v.null()),
+    bottomPrimaryMetricValue: v.union(v.number(), v.null()),
     confidence: v.union(v.literal("high"), v.literal("medium"), v.literal("low")),
   })),
   geminiInstructions: v.array(v.string()),
@@ -223,8 +241,10 @@ function buildFallbackBaseline(fallback: AnalysisDraft) {
     confidence: fallback.confidence,
     summary: fallback.summary,
     scores: fallback.scores,
+    whatYoureDoingWell: fallback.basicAnalysis.whatYoureDoingWell.slice(0, 3),
     whatToFix: fallback.basicAnalysis.whatToFix.slice(0, 2),
     cues: fallback.cues.slice(0, 2),
+    nextStep: fallback.nextStep,
   };
 }
 
@@ -303,11 +323,25 @@ async function generateGeminiDraft(
 
   try {
     const compactInput = buildCompactAnalysisInput(payload, context);
+    const cleanHighConfidenceClip =
+      payload.decision === "full"
+      && payload.confidence === "high"
+      && payload.frameStats.averageVisibleLandmarks >= 18
+      && payload.quality.currentIssues.length === 0
+      && payload.quality.windowIssues.length === 0;
+    const upperBodyBias =
+      context.exercise?.movementPattern === "upper"
+      || /(row|pull|pulldown|curl|press|raise|bench|overhead)/i.test(compactInput.exercise);
+    const repTelemetryLimited = upperBodyBias && cleanHighConfidenceClip && payload.repStats.detectedRepCount === 0;
     const compactRules = {
       scoring: [
         "Use provided evidence and app rules before generic fitness priors.",
         "Treat MediaPipe as support data, not absolute truth, especially when occlusion is present.",
         "Lower confidence when the clip is cropped, partially hidden, or the movement goal is not fully visible.",
+        "When clip confidence is high and visibility is clean, be appropriately generous rather than grading like a problem clip.",
+        "If the clip is strong, lead with 2-3 specific things the athlete is doing well before giving a main fix.",
+        "Missing rep segmentation alone is not a form fault; treat it as telemetry limitation unless the visible motion itself is unclear.",
+        "For upper-body lifts, reward stable torso position, repeatable setup, and clean pull or press mechanics when supported by the visible data.",
       ],
       outputBudget: {
         wellItemsMax: 3,
@@ -362,6 +396,21 @@ async function generateGeminiDraft(
       "- If mode is best_effort, mention crop, occlusion, or visibility limits in summary or basicAnalysis.summary.",
       "- Do not invent unseen joints, phases, or target-muscle claims beyond the provided evidence.",
       "- Prefer short, direct coaching language.",
+      cleanHighConfidenceClip
+        ? "- This is a high-confidence, visually clean clip. Start from the assumption that execution is solid unless clear evidence shows otherwise."
+        : "",
+      cleanHighConfidenceClip
+        ? "- For a clean clip, avoid stingy scoring. A technically strong rep should read like a strong rep."
+        : "",
+      repTelemetryLimited
+        ? "- Rep count is zero because segmentation was not stable, not because the user necessarily failed to show a real rep. Do not make rep start/end ambiguity the main fix unless it is visually obvious."
+        : "",
+      upperBodyBias
+        ? "- This is an upper-body pattern. Prioritize torso stability, setup consistency, line of pull, and visible upper-back or lat mechanics over lower-body heuristics."
+        : "",
+      upperBodyBias
+        ? "- If the visible mechanics look clean, include generous positive feedback in whatYoureDoingWell and keep the main fix modest."
+        : "",
       `Compact analysis input: ${JSON.stringify(compactInput)}`,
       `Live/analysis guardrails: ${JSON.stringify(context.guardrails)}`,
       `App rules: ${JSON.stringify(compactRules)}`,
@@ -375,7 +424,7 @@ async function generateGeminiDraft(
     ].join("\n\n");
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash",
+      model: ANALYSIS_MODEL,
       contents: prompt,
     });
     const responseText = response.text ?? "";
