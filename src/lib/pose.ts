@@ -108,7 +108,7 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
       readiness: "blocked",
       analysisReadiness: "reject",
       analysisReason: "No usable pose detected yet.",
-      guidance: "Start the camera and step into frame so the live pose pipeline can lock on.",
+      guidance: "Start the camera and keep shoulders through feet visible so the live pose pipeline can lock on.",
       issues: [],
       visibleLandmarks: 0,
       fullBodyVisible: false,
@@ -160,7 +160,7 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
   }
 
   if (!requiredForTracking) {
-    issues.push("Keep shoulders and hips visible.");
+      issues.push("Keep shoulders and hips visible, even if the face is cropped.");
   }
 
   if (!lowerBodyVisible) {
@@ -190,7 +190,7 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
       readiness: "blocked",
       analysisReadiness,
       analysisReason,
-      guidance: "Move into better light and keep your torso fully visible so the pose tracker can lock on.",
+      guidance: "Move into better light and keep shoulders, hips, and legs visible so the pose tracker can lock on.",
       issues,
       visibleLandmarks,
       fullBodyVisible,
@@ -204,7 +204,7 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
       readiness: "adjusting",
       analysisReadiness,
       analysisReason,
-      guidance: "You are close. Step back slightly and keep your whole lower body inside the frame.",
+      guidance: "You are close. Step back slightly and keep shoulders through feet inside the frame.",
       issues,
       visibleLandmarks,
       fullBodyVisible,

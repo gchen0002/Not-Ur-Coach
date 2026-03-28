@@ -130,6 +130,30 @@ export default defineSchema({
     referenceClipStorageId: v.optional(v.id("_storage")),
   }).index("by_name", ["name"]),
 
+  muscleHeuristics: defineTable({
+    targetMuscle: v.string(),
+    muscleRegion: v.optional(v.string()),
+    aliases: v.array(v.string()),
+    movementPatterns: v.array(v.string()),
+    primaryJoints: v.array(v.string()),
+    primaryJointActions: v.array(v.string()),
+    lineOfForceTags: v.array(v.string()),
+    whyItMatters: v.string(),
+    mechanicalTensionSummary: v.string(),
+    sarcomerogenesisSummary: v.string(),
+    evidenceLevel: v.string(),
+    keyHeuristics: v.array(v.any()),
+    researchChunkSources: v.array(v.string()),
+  }).index("by_targetMuscle", ["targetMuscle"]),
+
+  researchFrameworks: defineTable({
+    name: v.string(),
+    mechanicalTensionPrinciples: v.array(v.any()),
+    sarcomerogenesisPrinciples: v.array(v.any()),
+    caveats: v.array(v.string()),
+    recommendedFields: v.array(v.string()),
+  }).index("by_name", ["name"]),
+
   referenceVideos: defineTable({
     exercise: v.string(),
     variant: v.string(),

@@ -57,6 +57,7 @@ skills/                   shared agent skills + convex_rules.txt
 convex/
   schema.ts               full DB schema
   analyze.ts              core pipeline: pose data + key frames → Gemini → sanity check → store
+  muscleHeuristics.ts     heuristic lookup for novel or fuzzy exercises
   embed.ts                Embedding 2 for text + images
   chat.ts                 RAG + Google Search grounding
   generateExercise.ts     auto-create exercise profiles for unknown exercises
@@ -157,6 +158,10 @@ clipFrameEmbeddings  clipId, exercise, position, embedding (768d)
 exercises       name, primaryJoints[], keyAngleChecks (optimalRange + acceptableRange),
                 evidenceLevel, isAiGenerated, requiredEquipment: equipmentId[],
                 muscles[], referenceClipStorageId?
+muscleHeuristics targetMuscle, movementPatterns[], primaryJointActions[], lineOfForceTags[],
+                mechanicalTensionSummary, sarcomerogenesisSummary, keyHeuristics[]
+researchFrameworks name, mechanicalTensionPrinciples[], sarcomerogenesisPrinciples[],
+                caveats[], recommendedFields[]
 equipment       name, aliases[], icon?
 messages        userId, clipId?, role, content, groundingMetadata?
 ```
@@ -176,6 +181,8 @@ messages        userId, clipId?, role, content, groundingMetadata?
 - **Explore page** — top-level nav tab. Browsable exercise library filtered by muscle group (2-level picker) + equipment. Veo reference clips per exercise. Equipment input: photo (Gemini vision) optional, text/checklist fallback. Equipment saved to user profile.
 - **Equipment table** — separate `equipment` table with `name` + `aliases[]`. Seeded with ~10 entries for 15 exercises. Grows dynamically.
 - **Unknown exercises** — auto-generated via `generateExercise.ts` + Veo clip generation kicked off immediately. Stored permanently with `isAiGenerated: true`, `evidenceLevel: "insufficient"`.
+- **Research fallback order** — exact exercise match → alias/variant match → movement family → muscle heuristic inference → semantic RAG chunks.
+- **Muscle heuristics** — store cross-exercise hypertrophy logic around loaded length, mechanical tension, line of force, and only cautious sarcomerogenesis proxy claims.
 - **One Veo clip per exercise** for hackathon — schema supports multiple (angle, variant) for later.
 - **Exercise variants** — primary equipment version only for hackathon. New exercise entries for variants post-hackathon (e.g., "Dumbbell Squat" = separate entry from "Barbell Squat").
 

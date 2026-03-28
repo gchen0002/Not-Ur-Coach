@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { actionGeneric, makeFunctionReference, mutationGeneric } from "convex/server";
 import { v } from "convex/values";
+import { MUSCLE_HEURISTIC_CATALOG, RESEARCH_FRAMEWORK } from "./muscleHeuristicCatalog";
 import { EXERCISE_RESEARCH_CATALOG } from "./researchCatalog";
 
 const exerciseValidator = v.object({
@@ -22,6 +23,29 @@ const researchChunkValidator = v.object({
   exercises: v.array(v.string()),
   muscles: v.array(v.string()),
   embedding: v.array(v.number()),
+});
+
+const muscleHeuristicValidator = v.object({
+  targetMuscle: v.string(),
+  muscleRegion: v.optional(v.string()),
+  aliases: v.array(v.string()),
+  movementPatterns: v.array(v.string()),
+  primaryJoints: v.array(v.string()),
+  primaryJointActions: v.array(v.string()),
+  lineOfForceTags: v.array(v.string()),
+  whyItMatters: v.string(),
+  mechanicalTensionSummary: v.string(),
+  sarcomerogenesisSummary: v.string(),
+  evidenceLevel: v.string(),
+  keyHeuristics: v.array(v.any()),
+});
+
+const researchFrameworkValidator = v.object({
+  name: v.string(),
+  mechanicalTensionPrinciples: v.array(v.any()),
+  sarcomerogenesisPrinciples: v.array(v.any()),
+  caveats: v.array(v.string()),
+  recommendedFields: v.array(v.string()),
 });
 
 const EQUIPMENT_ALIASES: Record<string, { aliases: string[]; icon?: string }> = {
@@ -62,6 +86,8 @@ async function embedText(ai: GoogleGenAI, text: string) {
 export const upsertExerciseResearchCatalog = mutationGeneric({
   args: {
     exercises: v.array(exerciseValidator),
+    muscleHeuristics: v.array(muscleHeuristicValidator),
+    researchFramework: researchFrameworkValidator,
     researchChunks: v.array(researchChunkValidator),
   },
   handler: async (ctx, args) => {
@@ -112,6 +138,37 @@ export const upsertExerciseResearchCatalog = mutationGeneric({
       }
     }
 
+    for (const heuristic of args.muscleHeuristics) {
+      const existingHeuristic = await ctx.db
+        .query("muscleHeuristics")
+        .withIndex("by_targetMuscle", (query) => query.eq("targetMuscle", heuristic.targetMuscle))
+        .first();
+
+      const heuristicPayload = {
+        ...heuristic,
+        researchChunkSources: args.researchChunks
+          .filter((chunk) => chunk.muscles.includes(heuristic.targetMuscle))
+          .map((chunk) => chunk.source),
+      };
+
+      if (existingHeuristic) {
+        await ctx.db.patch(existingHeuristic._id, heuristicPayload);
+      } else {
+        await ctx.db.insert("muscleHeuristics", heuristicPayload);
+      }
+    }
+
+    const existingFramework = await ctx.db
+      .query("researchFrameworks")
+      .withIndex("by_name", (query) => query.eq("name", args.researchFramework.name))
+      .first();
+
+    if (existingFramework) {
+      await ctx.db.patch(existingFramework._id, args.researchFramework);
+    } else {
+      await ctx.db.insert("researchFrameworks", args.researchFramework);
+    }
+
     for (const chunk of args.researchChunks) {
       const existingChunk = await ctx.db
         .query("researchChunks")
@@ -127,6 +184,7 @@ export const upsertExerciseResearchCatalog = mutationGeneric({
 
     return {
       exerciseCount: args.exercises.length,
+      muscleHeuristicCount: args.muscleHeuristics.length,
       researchChunkCount: args.researchChunks.length,
     };
   },
@@ -156,6 +214,15 @@ export const seedExerciseResearchCatalog = actionGeneric({
       }
     }
 
+    for (const heuristic of MUSCLE_HEURISTIC_CATALOG) {
+      for (const chunk of heuristic.researchChunks) {
+        researchChunks.push({
+          ...chunk,
+          embedding: ai ? await embedText(ai, chunk.text) : zeroEmbedding(),
+        });
+      }
+    }
+
     const upsertRef = makeFunctionReference<"mutation", {
       exercises: Array<{
         name: string;
@@ -168,6 +235,27 @@ export const seedExerciseResearchCatalog = actionGeneric({
         depthHeuristic: unknown;
         keyAngleChecks: unknown[];
       }>;
+      muscleHeuristics: Array<{
+        targetMuscle: string;
+        muscleRegion?: string;
+        aliases: string[];
+        movementPatterns: string[];
+        primaryJoints: string[];
+        primaryJointActions: string[];
+        lineOfForceTags: string[];
+        whyItMatters: string;
+        mechanicalTensionSummary: string;
+        sarcomerogenesisSummary: string;
+        evidenceLevel: string;
+        keyHeuristics: unknown[];
+      }>;
+      researchFramework: {
+        name: string;
+        mechanicalTensionPrinciples: unknown[];
+        sarcomerogenesisPrinciples: unknown[];
+        caveats: string[];
+        recommendedFields: string[];
+      };
       researchChunks: Array<{
         source: string;
         sourceType: string;
@@ -176,7 +264,7 @@ export const seedExerciseResearchCatalog = actionGeneric({
         muscles: string[];
         embedding: number[];
       }>;
-    }, { exerciseCount: number; researchChunkCount: number }>("researchSeed:upsertExerciseResearchCatalog");
+    }, { exerciseCount: number; muscleHeuristicCount: number; researchChunkCount: number }>("researchSeed:upsertExerciseResearchCatalog");
 
     return await ctx.runMutation(upsertRef, {
       exercises: EXERCISE_RESEARCH_CATALOG.map((entry) => {
@@ -184,6 +272,12 @@ export const seedExerciseResearchCatalog = actionGeneric({
         void nestedResearchChunks;
         return exercise;
       }),
+      muscleHeuristics: MUSCLE_HEURISTIC_CATALOG.map((entry) => {
+        const { researchChunks: nestedResearchChunks, ...heuristic } = entry;
+        void nestedResearchChunks;
+        return heuristic;
+      }),
+      researchFramework: RESEARCH_FRAMEWORK,
       researchChunks,
     });
   },

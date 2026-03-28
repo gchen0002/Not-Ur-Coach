@@ -187,7 +187,7 @@ export function AnalyzePage() {
         const vision = await FilesetResolver.forVisionTasks("/mediapipe/wasm");
         const landmarker = await PoseLandmarker.createFromOptions(vision, {
           baseOptions: {
-            modelAssetPath: "/mediapipe/pose_landmarker_lite.task",
+            modelAssetPath: "/mediapipe/pose_landmarker_full.task",
           },
           runningMode: "VIDEO",
           numPoses: 1,
@@ -1017,7 +1017,8 @@ export function AnalyzePage() {
     if (!shouldSample && timerRef.current !== null) {
       stopSampling();
     }
-  }, [cameraState, clipState, pipelineState, sourceType, startSampling, stopSampling]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraState, clipState, pipelineState, sourceType]);
 
   const readinessTone =
     frameQuality.readiness === "ready"

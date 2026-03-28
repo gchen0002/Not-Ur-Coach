@@ -6,11 +6,12 @@ Place self-hosted MediaPipe assets here before running the Day 0 spike:
 - `wasm/vision_wasm_module_internal.js`
 - `wasm/vision_wasm_nosimd_internal.js`
 - `pose_landmarker_lite.task`
+- `pose_landmarker_full.task`
 
 The worker expects:
 
 - WASM resolver path: `/mediapipe/wasm`
-- Model path: `/mediapipe/pose_landmarker_lite.task`
+- Model path: `/mediapipe/pose_landmarker_full.task`
 
 Runtime note:
 
