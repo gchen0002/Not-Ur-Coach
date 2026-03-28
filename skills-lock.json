@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "skills": {
+    "clerk-setup": {
+      "source": "clerk/skills",
+      "sourceType": "github",
+      "computedHash": "6953c88d56e002b69df891bca9ff042d2c971cc42601f8f6998cfb06d8e93685"
+    },
+    "clerk-webhooks": {
+      "source": "clerk/skills",
+      "sourceType": "github",
+      "computedHash": "56cb2af3743c5a08859bdb069dcc8ab123b2db582d00638da78d02f088422b62"
+    },
+    "compositions/router-query": {
+      "source": "tanstack/router",
+      "sourceType": "github",
+      "computedHash": "8f6610e21e062c0521eecc65298415e0aab928e6d35699471451645cf0b8f637"
+    },
+    "find-skills": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "computedHash": "645b891da1edbae76ab79c7b088d4e73397464f8396edaf773c0e01971ce75d6"
+    },
+    "gemini-api-dev": {
+      "source": "google-gemini/gemini-skills",
+      "sourceType": "github",
+      "computedHash": "3b6e763faa077750ef596d53c1be431e61c66a28591c3092c54c94162deac1e8"
+    },
+    "gemini-interactions-api": {
+      "source": "google-gemini/gemini-skills",
+      "sourceType": "github",
+      "computedHash": "6fbbc3147d72e2bc0d6db4f13eaca2313b5d8028ab676fbd2461fab81ece0f62"
+    },
+    "gemini-live-api-dev": {
+      "source": "google-gemini/gemini-skills",
+      "sourceType": "github",
+      "computedHash": "cbf7a485940a758ca5c9ca852464a33d024d65b82685bb3238da05dfc8240f79"
+    },
+    "react-router": {
+      "source": "tanstack/router",
+      "sourceType": "github",
+      "computedHash": "875bf263cea87107e65cab32ee34d3fa878570efd32e131b901663029947dfdf"
+    },
+    "router-core": {
+      "source": "tanstack/router",
+      "sourceType": "github",
+      "computedHash": "a03553cf4cc62bb3b8c69b59b6147f042add1146d8c8ab1b5b80bb3d437a26b6"
+    },
+    "router-core/auth-and-guards": {
+      "source": "tanstack/router",
+      "sourceType": "github",
+      "computedHash": "941bcffcf0f770aaf0022d2a225285cad32a7cb07ef35f9cdbe2b7f3ebaf8bc0"
+    },
+    "router-core/code-splitting": {
+      "source": "tanstack/router",
+      "sourceType": "github",
+      "computedHash": "c5f7a5675b72519546a1514a9a9bf9ec071ff36e87b1c6b1fc02a8506f493c25"
+    },
+    "router-core/data-loading": {
+      "source": "tanstack/router",
+      "sourceType": "github",
+      "computedHash": "ccdbd8d3c910eb3810fbdb76b50744f74e6a7a267b40662cf67496c330e425dd"
+    },
+    "router-plugin": {
+      "source": "tanstack/router",
+      "sourceType": "github",
+      "computedHash": "7af4fe8c55cb505f778c2d716ffa4abd4c850183e13166125cb13347ef10000e"
+    }
+  }
+}

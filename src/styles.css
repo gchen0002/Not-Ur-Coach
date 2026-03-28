@@ -1,0 +1,51 @@
+@import url("https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap");
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  font-family: "Google Sans", ui-sans-serif, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --app-bg: #edf2ff;
+  --surface-1: #fcfcff;
+  --surface-2: #eef3ff;
+  --surface-accent: #dfe8ff;
+  --accent: #4464f2;
+  --accent-strong: #17309c;
+  --ink: #182236;
+  --ink-soft: #5d6980;
+  --outline: rgba(24, 34, 54, 0.1);
+  --shadow-1: 0 20px 50px rgba(75, 99, 155, 0.12);
+}
+
+@theme {
+  --font-display: var(--font-display);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--ink);
+  background: var(--app-bg);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+code {
+  border-radius: 999px;
+  background: rgba(68, 100, 242, 0.08);
+  padding: 0.15rem 0.5rem;
+}
