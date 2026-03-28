@@ -19,24 +19,24 @@ export function SurfaceCard({
   return (
     <section
       className={cn(
-        "rounded-[32px] border border-white/70 bg-[color:var(--surface-1)]/88 p-6 shadow-[var(--shadow-1)] backdrop-blur-xl",
+        "rounded-2xl bg-white p-6 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]",
         className,
       )}
     >
       {(eyebrow || title || description) && (
         <header className="mb-5">
           {eyebrow ? (
-            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.24em] text-[var(--accent-strong)]">
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-[0.2em] text-[var(--ink-muted)]">
               {eyebrow}
             </p>
           ) : null}
           {title ? (
-            <h2 className="font-display text-2xl tracking-tight text-[var(--ink)]">
+            <h2 className="text-lg font-medium text-[var(--ink)]">
               {title}
             </h2>
           ) : null}
           {description ? (
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ink-soft)]">
+            <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-[var(--ink-secondary)]">
               {description}
             </p>
           ) : null}

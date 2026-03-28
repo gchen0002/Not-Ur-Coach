@@ -776,148 +776,123 @@ export function AnalyzePage() {
 
   const readinessTone =
     frameQuality.readiness === "ready"
-      ? "bg-[#eaf7ef] text-[#1f6b3d]"
+      ? "bg-emerald-50 text-emerald-700"
       : frameQuality.readiness === "adjusting"
-        ? "bg-[#fff5e5] text-[#9a5a00]"
-        : "bg-[#fff1f1] text-[#8c1d18]";
+        ? "bg-amber-50 text-amber-700"
+        : "bg-red-50 text-red-700";
 
   const analysisTone =
     frameQuality.analysisReadiness === "full"
-      ? "bg-[#eaf7ef] text-[#1f6b3d]"
+      ? "bg-emerald-50 text-emerald-700"
       : frameQuality.analysisReadiness === "best_effort"
-        ? "bg-[#fff5e5] text-[#9a5a00]"
-        : "bg-[#fff1f1] text-[#8c1d18]";
+        ? "bg-amber-50 text-amber-700"
+        : "bg-red-50 text-red-700";
 
   const windowAnalysisTone =
     windowQuality.analysisReadiness === "full"
-      ? "bg-[#eaf7ef] text-[#1f6b3d]"
+      ? "bg-emerald-50 text-emerald-700"
       : windowQuality.analysisReadiness === "best_effort"
-        ? "bg-[#fff5e5] text-[#9a5a00]"
-        : "bg-[#fff1f1] text-[#8c1d18]";
+        ? "bg-amber-50 text-amber-700"
+        : "bg-red-50 text-red-700";
 
   const showDemoGuide = sourceType === null && analysisState === "idle";
 
   return (
     <div className="space-y-6 pb-28 lg:pb-0">
-      <SurfaceCard
-        eyebrow="Block 9"
-        title="Capture and analyze testbed"
-        description="This page now acts like the demo surface: capture or upload a clip, run pose analysis, review coaching feedback, then ask follow-up questions without storing the raw video." 
-      >
-        <div className="flex flex-wrap items-center gap-4">
-          <button
-            type="button"
-            onClick={() => {
-              void startCamera();
-            }}
-            disabled={cameraState === "starting" || cameraState === "live"}
-            className="rounded-full bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white shadow-[var(--shadow-1)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Start live test
-          </button>
-          <label className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)]">
-            Add training clip
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="video/*"
-              className="hidden"
-              onChange={(event) => {
-                const nextFile = event.target.files?.[0] ?? null;
-                void handleTrainingClip(nextFile);
-                event.currentTarget.value = "";
-              }}
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => {
-              void startRecording();
-            }}
-            disabled={
-              !recordingSupported ||
-              sourceType !== "camera" ||
-              cameraState !== "live" ||
-              recordingState === "recording" ||
-              recordingState === "processing"
-            }
-            className="rounded-full border border-[var(--outline)] bg-[var(--surface-accent)] px-5 py-3 text-sm font-semibold text-[var(--accent-strong)] shadow-[var(--shadow-1)] transition hover:brightness-98 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Start recording
-          </button>
-          <button
-            type="button"
-            onClick={stopRecording}
-            disabled={recordingState !== "recording"}
-            className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Stop recording
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void runAnalysis();
-            }}
-            disabled={!canRunAnalysis}
-            className="rounded-full bg-[var(--accent-strong)] px-5 py-3 text-sm font-semibold text-white shadow-[var(--shadow-1)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Run analysis
-          </button>
-          <button
-            type="button"
-            onClick={stopCamera}
-            disabled={sourceType === null}
-            className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Stop
-          </button>
-          <p className="text-sm text-[var(--ink-soft)]">
-            Best test: full body in frame, 6-8 feet back, neutral background, decent light, ideally a clean side view. You can record from the live camera, then review the captured clip here.
-          </p>
-        </div>
-      </SurfaceCard>
-
-      {showDemoGuide ? (
-        <SurfaceCard
-          eyebrow="Demo Flow"
-          title="Quick start"
-          description="This is the fastest path for a booth demo or self-test when nobody wants to hunt through the page first."
+      {/* ─── Action bar ─── */}
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => { void startCamera(); }}
+          disabled={cameraState === "starting" || cameraState === "live"}
+          className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-3 text-sm font-medium text-white shadow-lg shadow-[#4f46e5]/20 transition hover:shadow-xl active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-            <div className="grid gap-3 sm:grid-cols-3">
-              {[
-                ["1", "Load a clip", "Upload a training clip or start the live camera first."],
-                ["2", "Run analysis", "Let the pose window build, then click Run analysis."],
-                ["3", "Review and chat", "Use the scorecards, progress panel, and coaching chat below."],
-              ].map(([step, title, text]) => (
-                <div key={step} className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--accent-strong)] text-sm font-semibold text-white">
-                    {step}
-                  </div>
-                  <p className="mt-4 text-sm font-semibold text-[var(--ink)]">{title}</p>
-                  <p className="mt-2 text-sm leading-7 text-[var(--ink-soft)]">{text}</p>
+          Start live test
+        </button>
+        <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-[var(--outline)] bg-white px-6 py-3 text-sm font-medium text-[var(--ink)] shadow-[var(--shadow-sm)] transition hover:bg-[var(--surface-2)]">
+          Upload clip
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="video/*"
+            className="hidden"
+            onChange={(event) => {
+              const nextFile = event.target.files?.[0] ?? null;
+              void handleTrainingClip(nextFile);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => { void startRecording(); }}
+          disabled={
+            !recordingSupported ||
+            sourceType !== "camera" ||
+            cameraState !== "live" ||
+            recordingState === "recording" ||
+            recordingState === "processing"
+          }
+          className="rounded-full border border-[var(--outline)] bg-[var(--accent-light)] px-6 py-3 text-sm font-medium text-[var(--accent)] transition hover:bg-[var(--accent)]/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Record
+        </button>
+        <button
+          type="button"
+          onClick={stopRecording}
+          disabled={recordingState !== "recording"}
+          className="rounded-full border border-[var(--outline)] bg-white px-6 py-3 text-sm font-medium text-[var(--ink)] shadow-[var(--shadow-sm)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Stop rec
+        </button>
+        <button
+          type="button"
+          onClick={() => { void runAnalysis(); }}
+          disabled={!canRunAnalysis}
+          className="inline-flex items-center gap-2 rounded-full bg-[var(--accent-hover)] px-6 py-3 text-sm font-medium text-white shadow-lg shadow-[#4338ca]/20 transition hover:shadow-xl active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Run analysis
+        </button>
+        <button
+          type="button"
+          onClick={stopCamera}
+          disabled={sourceType === null}
+          className="rounded-full border border-[var(--outline)] bg-white px-6 py-3 text-sm font-medium text-[var(--ink)] shadow-[var(--shadow-sm)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Stop
+        </button>
+      </div>
+
+      {/* ─── Status message ─── */}
+      <p className="text-sm leading-relaxed text-[var(--ink-secondary)]">{statusMessage}</p>
+
+      {/* ─── Demo guide ─── */}
+      {showDemoGuide ? (
+        <div className="rounded-[28px] bg-[#f0f4ff] p-6 ring-1 ring-[var(--outline)]">
+          <h2 className="text-lg font-medium text-[var(--ink)]">Quick start</h2>
+          <p className="mt-1.5 text-sm text-[var(--ink-secondary)]">Fastest path for a booth demo or self-test.</p>
+          <div className="mt-5 grid gap-4 md:grid-cols-3">
+            {[
+              ["1", "Load a clip", "Upload a training clip or start the live camera."],
+              ["2", "Run analysis", "Let the pose window build, then click Run analysis."],
+              ["3", "Review & chat", "Check scorecards, progress, and coaching chat."],
+            ].map(([step, title, text]) => (
+              <div key={step} className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--accent)] text-sm font-semibold text-white">
+                  {step}
                 </div>
-              ))}
-            </div>
-            <div className="rounded-[24px] bg-[linear-gradient(145deg,#eef4ff_0%,#f7fbf7_100%)] px-5 py-5 shadow-[var(--shadow-1)]">
-              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--accent-strong)]">Best capture setup</p>
-              <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--ink)]">
-                <li>- Keep the full body visible if possible, especially hips, knees, and ankles.</li>
-                <li>- A clean side view works best for squat and hinge demos.</li>
-                <li>- If the clip is imperfect, the system can still attempt best-effort analysis before rejecting it.</li>
-              </ul>
-            </div>
+                <p className="mt-3 text-sm font-medium text-[var(--ink)]">{title}</p>
+                <p className="mt-1.5 text-sm leading-relaxed text-[var(--ink-secondary)]">{text}</p>
+              </div>
+            ))}
           </div>
-        </SurfaceCard>
+        </div>
       ) : null}
 
+      {/* ─── Video + diagnostics ─── */}
       <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
-        <SurfaceCard
-          eyebrow="Camera"
-          title="Live preview"
-          description="Video and canvas stay mirrored together so the overlay tracks what the athlete sees in the preview."
-        >
-          <div className="relative overflow-hidden rounded-[28px] bg-[#0f172a]">
+        <div className="rounded-2xl bg-white p-4 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+          <div className="relative overflow-hidden rounded-xl bg-[#0f172a]">
             <div
               className="relative w-full"
               style={{
@@ -966,34 +941,31 @@ export function AnalyzePage() {
                 className="pointer-events-none absolute inset-0 h-full w-full"
               />
             </div>
-            <div className="absolute left-4 top-4 rounded-full bg-black/55 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-white">
+            <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-white backdrop-blur">
               {recordingState === "recording"
                 ? `recording ${recordingDuration}s`
                 : sourceType === "clip"
                   ? clipState
                   : cameraState}
             </div>
-            <div className="absolute bottom-4 left-4 rounded-[20px] bg-black/55 px-4 py-3 text-sm text-white backdrop-blur">
+            <div className="absolute bottom-3 left-3 rounded-xl bg-black/60 px-3 py-2 text-xs text-white backdrop-blur">
               {visibleLandmarks > 0 ? `${visibleLandmarks} landmarks visible` : "No pose landmarks yet"}
             </div>
           </div>
-        </SurfaceCard>
+        </div>
 
-        <SurfaceCard
-          eyebrow="Status"
-          title="Pose diagnostics"
-          description={statusMessage}
-        >
-          <div className="space-y-4">
+        <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+          <h3 className="text-sm font-medium text-[var(--ink)]">Pose diagnostics</h3>
+          <div className="mt-4 space-y-2.5">
             {pipelineError ? (
-              <div className="rounded-[24px] border border-[#f0b8b8] bg-[#fff1f1] px-4 py-3 text-sm text-[#8c1d18]">
+              <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {pipelineError}
               </div>
             ) : null}
-            <div className={`rounded-[24px] px-4 py-3 text-sm font-medium ${readinessTone}`}>
+            <div className={`rounded-xl px-4 py-2.5 text-sm font-medium ${readinessTone}`}>
               {frameQuality.guidance}
             </div>
-            <div className={`rounded-[24px] px-4 py-3 text-sm font-medium ${analysisTone}`}>
+            <div className={`rounded-xl px-4 py-2.5 text-sm font-medium ${analysisTone}`}>
               {frameQuality.analysisReason}
             </div>
             {[
@@ -1001,229 +973,212 @@ export function AnalyzePage() {
               ["Source", sourceType ?? "none"],
               [sourceType === "clip" ? "Clip" : "Camera", sourceType === "clip" ? clipState : cameraState],
               ["Recording", recordingState],
-              ["Recording seconds", String(recordingDuration)],
+              ["Rec. seconds", String(recordingDuration)],
               ["Analysis", analysisState],
-              ["Analysis mode", frameQuality.analysisReadiness],
-              ["Frames processed", String(framesProcessed)],
-              ["Visible landmarks", String(visibleLandmarks)],
+              ["Mode", frameQuality.analysisReadiness],
+              ["Frames", String(framesProcessed)],
+              ["Landmarks", String(visibleLandmarks)],
               ["Camera angle", cameraAngle.label],
-              ["Buffered frames", String(bufferedFrames.length)],
+              ["Buffered", String(bufferedFrames.length)],
             ].map(([label, value]) => (
               <div
                 key={label}
-                className="flex items-center justify-between rounded-[24px] bg-[var(--surface-2)] px-4 py-3 text-sm"
+                className="flex items-center justify-between rounded-xl bg-[var(--surface-2)] px-3.5 py-2.5 text-sm"
               >
                 <span className="font-medium text-[var(--ink)]">{label}</span>
-                <span className="text-[var(--ink-soft)]">{value}</span>
+                <span className="text-[var(--ink-muted)]">{value}</span>
               </div>
             ))}
-            <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
+            <div className="rounded-xl bg-[var(--surface-2)] px-3.5 py-3 text-sm text-[var(--ink-secondary)]">
               <p className="font-medium text-[var(--ink)]">Camera guidance</p>
-              <p className="mt-2">{cameraAngle.guidance}</p>
-              <p className="mt-2">
-                width ratio: {cameraAngle.widthRatio ?? "-"} | depth ratio: {cameraAngle.depthRatio ?? "-"}
+              <p className="mt-1.5">{cameraAngle.guidance}</p>
+              <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                width: {cameraAngle.widthRatio ?? "-"} | depth: {cameraAngle.depthRatio ?? "-"}
               </p>
-              {clipName ? <p className="mt-2">clip: {clipName}</p> : null}
-              {recordedClipName ? <p className="mt-2">last recording: {recordedClipName}</p> : null}
+              {clipName ? <p className="mt-1 text-xs text-[var(--ink-muted)]">clip: {clipName}</p> : null}
+              {recordedClipName ? <p className="mt-1 text-xs text-[var(--ink-muted)]">last rec: {recordedClipName}</p> : null}
             </div>
             {recordingError ? (
-              <div className="rounded-[24px] border border-[#f0b8b8] bg-[#fff1f1] px-4 py-3 text-sm text-[#8c1d18]">
+              <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {recordingError}
               </div>
             ) : null}
             {analysisError ? (
-              <div className="rounded-[24px] border border-[#f0b8b8] bg-[#fff1f1] px-4 py-3 text-sm text-[#8c1d18]">
+              <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {analysisError}
               </div>
             ) : null}
             {frameQuality.issues.length > 0 ? (
-              <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
+              <div className="rounded-xl bg-[var(--surface-2)] px-3.5 py-3 text-sm text-[var(--ink-secondary)]">
                 <p className="font-medium text-[var(--ink)]">Quick fixes</p>
-                <ul className="mt-2 space-y-2">
+                <ul className="mt-1.5 space-y-1">
                   {frameQuality.issues.map((issue) => (
-                    <li key={issue}>- {issue}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
-        </SurfaceCard>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <SurfaceCard
-          eyebrow="Angles"
-          title="Live joint reads"
-          description="These values update from the current pose frames and give us the debug layer we need before rep segmentation."
-        >
-          <div className="grid gap-3 sm:grid-cols-2">
-            {liveAngles.metrics.map((metric) => (
-              <div
-                key={metric.label}
-                className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4"
-              >
-                <p className="text-sm font-medium text-[var(--ink)]">{metric.label}</p>
-                <p className="mt-2 text-2xl font-semibold text-[var(--accent-strong)]">
-                  {metric.value === null ? "--" : `${metric.value}${metric.unit}`}
-                </p>
-              </div>
-            ))}
-          </div>
-        </SurfaceCard>
-
-        <SurfaceCard
-          eyebrow="Reps"
-          title="Rep segmentation"
-          description="This is the first-pass rep detector built from buffered knee-angle changes. It feeds Block 5 analysis with rep-aware context."
-        >
-          <div className="space-y-3">
-            {[
-              ["Detected reps", String(analyzePayload.repStats.detectedRepCount)],
-              ["Average rep duration", analyzePayload.repStats.averageRepDurationMs === null ? "--" : `${analyzePayload.repStats.averageRepDurationMs}ms`],
-              ["Average bottom knee", analyzePayload.repStats.averageBottomKneeAngle === null ? "--" : `${analyzePayload.repStats.averageBottomKneeAngle}deg`],
-              ["Primary metric", analyzePayload.repStats.primaryMetric],
-            ].map(([label, value]) => (
-              <div
-                key={label}
-                className="flex items-center justify-between rounded-[24px] bg-[var(--surface-2)] px-4 py-3 text-sm"
-              >
-                <span className="font-medium text-[var(--ink)]">{label}</span>
-                <span className="text-[var(--ink-soft)]">{value}</span>
-              </div>
-            ))}
-            {analyzePayload.reps.length > 0 ? (
-              <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
-                <p className="font-medium text-[var(--ink)]">Rep breakdown</p>
-                <ul className="mt-2 space-y-2">
-                  {analyzePayload.reps.map((rep) => (
-                    <li key={rep.repNumber}>
-                      {`Rep ${rep.repNumber}: ${rep.durationMs}ms, bottom ${rep.bottomKneeAngle ?? "--"}deg, ${rep.confidence} confidence`}
+                    <li key={issue} className="flex items-start gap-2">
+                      <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+                      {issue}
                     </li>
                   ))}
                 </ul>
               </div>
             ) : null}
           </div>
-        </SurfaceCard>
+        </div>
+      </div>
 
-        <AnalysisResultsPanel result={analysisPreview} isPreview={!analysisResult} />
-
-        <ProgressHistoryPanel history={analysisHistory} />
-
-        <ChatPanel
-          analysisResult={analysisResult}
-          messages={chatMessages}
-          chatState={chatState}
-          chatError={chatError}
-          onSend={sendChatMessage}
-        />
-
-        <SurfaceCard
-          eyebrow="Debug"
-          title="Analysis result JSON"
-          description="This is the raw result object from the current analysis path for debugging and prompt tuning."
-        >
-          <div className="rounded-[24px] bg-[var(--surface-2)] p-4">
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-6 text-[var(--ink-soft)]">
-              {JSON.stringify(analysisResult, null, 2)}
-            </pre>
-          </div>
-        </SurfaceCard>
-
-        <SurfaceCard
-          eyebrow="Analyze Payload"
-          title="Gemini handoff preview"
-          description="This is the structured payload we can pass into the future analysis action once Convex `analyze.ts` exists."
-        >
-          <div className="rounded-[24px] bg-[var(--surface-2)] p-4">
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-6 text-[var(--ink-soft)]">
-              {JSON.stringify(analyzePayload, null, 2)}
-            </pre>
-          </div>
-        </SurfaceCard>
-
-        <SurfaceCard
-          eyebrow="Analysis Draft"
-          title="Backend fallback preview"
-          description="This is the first-pass analysis draft the Convex action can already generate before the real Gemini call is wired in."
-        >
-          <div className="rounded-[24px] bg-[var(--surface-2)] p-4">
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-6 text-[var(--ink-soft)]">
-              {JSON.stringify(analysisDraft, null, 2)}
-            </pre>
-          </div>
-        </SurfaceCard>
-
-        <SurfaceCard
-          eyebrow="Pipeline"
-          title="Phase readiness"
-          description="This is still a test harness, but it now tells us whether the buffered clip window should get full analysis, best-effort analysis, or a hard reject."
-        >
-          <div className="grid gap-3">
-            <div className={`rounded-[24px] px-4 py-4 text-sm font-medium ${windowAnalysisTone}`}>
-              {windowQuality.recommendation}
-            </div>
-            {[
-              ["Window decision", windowQuality.analysisReadiness],
-              ["Sampled frames", String(windowQuality.sampledFrames)],
-              ["Full frames", String(windowQuality.fullFrames)],
-              ["Best-effort frames", String(windowQuality.bestEffortFrames)],
-              ["Rejected frames", String(windowQuality.rejectedFrames)],
-              ["Analysis mode", frameQuality.analysisReadiness],
-              ["Full body visible", frameQuality.fullBodyVisible ? "yes" : "no"],
-              ["Centered", frameQuality.centered ? "yes" : "no"],
-              ["Clipped", frameQuality.clipped ? "yes" : "no"],
-              ["Dominant side", liveAngles.dominantSide ?? "unknown"],
-              ["Camera confidence", `${Math.round(cameraAngle.confidence * 100)}%`],
-            ].map(([label, value]) => (
-              <div
-                key={label}
-                className="flex items-center justify-between rounded-[24px] bg-[var(--surface-2)] px-4 py-3 text-sm"
-              >
-                <span className="font-medium text-[var(--ink)]">{label}</span>
-                <span className="text-[var(--ink-soft)]">{value}</span>
+      {/* ─── Angles + Reps ─── */}
+      <div className="grid gap-5 lg:grid-cols-2">
+        <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+          <h3 className="text-sm font-medium text-[var(--ink)]">Live joint reads</h3>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            {liveAngles.metrics.map((metric) => (
+              <div key={metric.label} className="rounded-xl bg-[var(--surface-2)] px-4 py-3.5">
+                <p className="text-xs font-medium uppercase tracking-wider text-[var(--ink-muted)]">{metric.label}</p>
+                <p className="mt-1.5 text-2xl font-medium text-[var(--accent)]">
+                  {metric.value === null ? "--" : `${metric.value}${metric.unit}`}
+                </p>
               </div>
             ))}
-            {windowQuality.primaryIssues.length > 0 ? (
-              <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
-                <p className="font-medium text-[var(--ink)]">Window-level blockers</p>
-                <ul className="mt-2 space-y-2">
-                  {windowQuality.primaryIssues.map((issue) => (
-                    <li key={issue}>- {issue}</li>
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+          <h3 className="text-sm font-medium text-[var(--ink)]">Rep segmentation</h3>
+          <div className="mt-4 space-y-2.5">
+            {[
+              ["Detected reps", String(analyzePayload.repStats.detectedRepCount)],
+              ["Avg rep duration", analyzePayload.repStats.averageRepDurationMs === null ? "--" : `${analyzePayload.repStats.averageRepDurationMs}ms`],
+              ["Avg bottom knee", analyzePayload.repStats.averageBottomKneeAngle === null ? "--" : `${analyzePayload.repStats.averageBottomKneeAngle}deg`],
+              ["Primary metric", analyzePayload.repStats.primaryMetric],
+            ].map(([label, value]) => (
+              <div key={label} className="flex items-center justify-between rounded-xl bg-[var(--surface-2)] px-3.5 py-2.5 text-sm">
+                <span className="font-medium text-[var(--ink)]">{label}</span>
+                <span className="text-[var(--ink-muted)]">{value}</span>
+              </div>
+            ))}
+            {analyzePayload.reps.length > 0 ? (
+              <div className="rounded-xl bg-[var(--surface-2)] px-3.5 py-3 text-sm text-[var(--ink-secondary)]">
+                <p className="font-medium text-[var(--ink)]">Rep breakdown</p>
+                <ul className="mt-1.5 space-y-1">
+                  {analyzePayload.reps.map((rep) => (
+                    <li key={rep.repNumber} className="flex items-start gap-2">
+                      <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent)]" />
+                      {`Rep ${rep.repNumber}: ${rep.durationMs}ms, bottom ${rep.bottomKneeAngle ?? "--"}deg, ${rep.confidence}`}
+                    </li>
                   ))}
                 </ul>
               </div>
             ) : null}
           </div>
-        </SurfaceCard>
+        </div>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/70 bg-[color:var(--surface-1)]/92 px-4 py-3 shadow-[0_-18px_40px_rgba(75,99,155,0.14)] backdrop-blur-xl lg:hidden">
-        <div className="mx-auto flex max-w-7xl items-center gap-3">
+      {/* ─── Analysis results ─── */}
+      <AnalysisResultsPanel result={analysisPreview} isPreview={!analysisResult} />
+
+      {/* ─── Progress + Chat side by side ─── */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <ProgressHistoryPanel history={analysisHistory} />
+
+        <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+          <h3 className="text-sm font-medium text-[var(--ink)]">Coaching chat</h3>
+          <div className="mt-4">
+            <ChatPanel
+              analysisResult={analysisResult}
+              messages={chatMessages}
+              chatState={chatState}
+              chatError={chatError}
+              onSend={sendChatMessage}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* ─── Debug panels ─── */}
+      <details className="group">
+        <summary className="cursor-pointer text-sm font-medium text-[var(--ink-muted)] transition hover:text-[var(--ink)]">
+          Debug panels
+        </summary>
+        <div className="mt-4 grid gap-5 lg:grid-cols-2">
+          {[
+            { title: "Analysis result JSON", data: analysisResult },
+            { title: "Gemini handoff payload", data: analyzePayload },
+            { title: "Backend fallback draft", data: analysisDraft },
+          ].map((panel) => (
+            <div key={panel.title} className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+              <h4 className="text-xs font-medium uppercase tracking-wider text-[var(--ink-muted)]">{panel.title}</h4>
+              <div className="mt-3 rounded-xl bg-[var(--surface-2)] p-3">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-[var(--ink-muted)]">
+                  {JSON.stringify(panel.data, null, 2)}
+                </pre>
+              </div>
+            </div>
+          ))}
+
+          <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+            <h4 className="text-xs font-medium uppercase tracking-wider text-[var(--ink-muted)]">Phase readiness</h4>
+            <div className="mt-3 space-y-2">
+              <div className={`rounded-xl px-4 py-2.5 text-sm font-medium ${windowAnalysisTone}`}>
+                {windowQuality.recommendation}
+              </div>
+              {[
+                ["Window decision", windowQuality.analysisReadiness],
+                ["Sampled frames", String(windowQuality.sampledFrames)],
+                ["Full frames", String(windowQuality.fullFrames)],
+                ["Best-effort frames", String(windowQuality.bestEffortFrames)],
+                ["Rejected frames", String(windowQuality.rejectedFrames)],
+                ["Analysis mode", frameQuality.analysisReadiness],
+                ["Full body visible", frameQuality.fullBodyVisible ? "yes" : "no"],
+                ["Centered", frameQuality.centered ? "yes" : "no"],
+                ["Clipped", frameQuality.clipped ? "yes" : "no"],
+                ["Dominant side", liveAngles.dominantSide ?? "unknown"],
+                ["Camera confidence", `${Math.round(cameraAngle.confidence * 100)}%`],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between rounded-xl bg-[var(--surface-2)] px-3.5 py-2.5 text-sm">
+                  <span className="font-medium text-[var(--ink)]">{label}</span>
+                  <span className="text-[var(--ink-muted)]">{value}</span>
+                </div>
+              ))}
+              {windowQuality.primaryIssues.length > 0 ? (
+                <div className="rounded-xl bg-[var(--surface-2)] px-3.5 py-3 text-sm text-[var(--ink-secondary)]">
+                  <p className="font-medium text-[var(--ink)]">Window-level blockers</p>
+                  <ul className="mt-1.5 space-y-1">
+                    {windowQuality.primaryIssues.map((issue) => (
+                      <li key={issue} className="flex items-start gap-2">
+                        <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
+                        {issue}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </details>
+
+      {/* ─── Mobile bottom bar ─── */}
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--outline)] bg-white/95 px-4 py-3 backdrop-blur-xl lg:hidden">
+        <div className="mx-auto flex max-w-6xl items-center gap-2">
           <button
             type="button"
-            onClick={() => {
-              void startCamera();
-            }}
+            onClick={() => { void startCamera(); }}
             disabled={cameraState === "starting" || cameraState === "live"}
-            className="flex-1 rounded-full bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white shadow-[var(--shadow-1)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex-1 rounded-full bg-[var(--accent)] px-4 py-3 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-40"
           >
             Camera
           </button>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex-1 rounded-full border border-[var(--outline)] bg-white px-4 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)]"
+            className="flex-1 rounded-full border border-[var(--outline)] bg-white px-4 py-3 text-sm font-medium text-[var(--ink)] transition hover:bg-[var(--surface-2)]"
           >
             Clip
           </button>
           <button
             type="button"
-            onClick={() => {
-              void runAnalysis();
-            }}
+            onClick={() => { void runAnalysis(); }}
             disabled={!canRunAnalysis}
-            className="flex-1 rounded-full bg-[var(--accent-strong)] px-4 py-3 text-sm font-semibold text-white shadow-[var(--shadow-1)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex-1 rounded-full bg-[var(--accent-hover)] px-4 py-3 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-40"
           >
             Analyze
           </button>

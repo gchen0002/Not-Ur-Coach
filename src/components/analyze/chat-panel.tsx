@@ -1,19 +1,27 @@
 import { useState } from "react";
-import { SurfaceCard } from "@/components/ui/surface-card";
+import { ArrowUpIcon, SparklesIcon } from "@heroicons/react/24/solid";
 import type { AnalysisRunResult } from "@/lib/analysis-contract";
 import type { ChatMessage } from "@/lib/chat-contract";
+import { cn } from "@/lib/utils";
 
-function providerTone(provider?: ChatMessage["provider"]) {
-  if (provider === "gemini") {
-    return "text-[#17663d]";
-  }
-
-  if (provider === "heuristic") {
-    return "text-[#9a5a00]";
-  }
-
-  return "text-[#2947a8]";
+function providerLabel(provider?: ChatMessage["provider"]) {
+  if (provider === "gemini") return "Gemini";
+  if (provider === "heuristic") return "Heuristic";
+  return "Draft";
 }
+
+function providerStyle(provider?: ChatMessage["provider"]) {
+  if (provider === "gemini") return "text-emerald-600";
+  if (provider === "heuristic") return "text-amber-600";
+  return "text-blue-600";
+}
+
+const SUGGESTIONS = [
+  "What should I fix first?",
+  "Why was my score low?",
+  "Was my tempo rushed?",
+  "What cue for next set?",
+];
 
 type ChatPanelProps = {
   analysisResult: AnalysisRunResult | null;
@@ -34,88 +42,110 @@ export function ChatPanel({
 
   const disabled = !analysisResult || chatState === "running" || draft.trim().length === 0;
 
+  function handleSubmit(text: string) {
+    const prompt = text.trim();
+    if (!prompt) return;
+    void onSend(prompt).then(() => setDraft(""));
+  }
+
   return (
-    <SurfaceCard
-      eyebrow="Block 8"
-      title="Coaching chat"
-      description="Ask follow-up questions about the latest analysis without storing the raw clip. The assistant answers from the current result context."
-    >
-      <div className="space-y-4">
-        <div className="rounded-[24px] bg-[var(--surface-2)] px-5 py-5 text-sm leading-7 text-[var(--ink-soft)]">
+    <div className="space-y-4">
+      {/* ─── Context hint ─── */}
+      <div className="rounded-2xl bg-[var(--surface-tint)] px-5 py-4 ring-1 ring-[var(--outline)]">
+        <p className="text-sm leading-relaxed text-[var(--ink-secondary)]">
           {analysisResult
-            ? "Ask things like: what should I fix first, why was my score low, was my tempo rushed, or what cue should I focus on next set?"
-            : "Run analysis first, then this chat can answer follow-up questions from that result."}
-        </div>
-
-        <div className="max-h-[26rem] space-y-3 overflow-y-auto rounded-[24px] bg-[var(--surface-2)] p-4">
-          {messages.length > 0 ? (
-            messages.map((message) => (
-              <div
-                key={message.id}
-                className={`rounded-[20px] px-4 py-4 shadow-[var(--shadow-1)] ${message.role === "user" ? "ml-8 bg-[var(--accent-strong)] text-white" : "mr-8 bg-white text-[var(--ink)]"}`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs font-semibold uppercase tracking-[0.16em] opacity-70">
-                    {message.role === "user" ? "You" : "Coach"}
-                  </p>
-                  {message.role === "assistant" && message.provider ? (
-                    <span className={`text-[11px] font-semibold uppercase tracking-[0.14em] ${providerTone(message.provider)}`}>
-                      {message.provider}
-                    </span>
-                  ) : null}
-                </div>
-                <p className="mt-2 text-sm leading-7">{message.content}</p>
-              </div>
-            ))
-          ) : (
-            <div className="rounded-[20px] bg-white px-4 py-4 text-sm text-[var(--ink-soft)] shadow-[var(--shadow-1)]">
-              No chat messages yet.
-            </div>
-          )}
-        </div>
-
-        {chatError ? (
-          <div className="rounded-[20px] border border-[#f0b8b8] bg-[#fff1f1] px-4 py-3 text-sm text-[#8c1d18]">
-            {chatError}
-          </div>
-        ) : null}
-
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const prompt = draft.trim();
-
-            if (!prompt) {
-              return;
-            }
-
-            void onSend(prompt).then(() => {
-              setDraft("");
-            });
-          }}
-        >
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            rows={3}
-            placeholder="Ask a question about your latest analysis..."
-            className="w-full rounded-[24px] border border-[var(--outline)] bg-white px-4 py-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent-strong)]"
-          />
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-[var(--ink-soft)]">
-              {chatState === "running" ? "Generating reply..." : analysisResult ? `Using ${analysisResult.provider} analysis context.` : "Waiting for analysis result."}
-            </p>
-            <button
-              type="submit"
-              disabled={disabled}
-              className="rounded-full bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white shadow-[var(--shadow-1)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Send
-            </button>
-          </div>
-        </form>
+            ? "Ask follow-up questions about your latest analysis. The coach answers from your actual result context."
+            : "Run an analysis first, then chat with the coaching assistant about your results."}
+        </p>
       </div>
-    </SurfaceCard>
+
+      {/* ─── Suggestion chips ─── */}
+      {analysisResult && messages.length <= 1 && (
+        <div className="flex flex-wrap gap-2">
+          {SUGGESTIONS.map((s) => (
+            <button
+              key={s}
+              onClick={() => { setDraft(s); handleSubmit(s); }}
+              className="rounded-full border border-[var(--outline)] bg-white px-3.5 py-2 text-xs font-medium text-[var(--ink-secondary)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ─── Messages ─── */}
+      <div className="max-h-[28rem] space-y-3 overflow-y-auto rounded-2xl bg-[var(--surface-2)] p-4">
+        {messages.length > 0 ? (
+          messages.map((message) => (
+            <div
+              key={message.id}
+              className={cn(
+                "rounded-2xl px-4 py-3.5",
+                message.role === "user"
+                  ? "ml-8 bg-[var(--accent)] text-white"
+                  : "mr-8 bg-white text-[var(--ink)] shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]",
+              )}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <p className={cn(
+                  "text-[10px] font-semibold uppercase tracking-wider",
+                  message.role === "user" ? "text-white/60" : "text-[var(--ink-muted)]",
+                )}>
+                  {message.role === "user" ? "You" : "Coach"}
+                </p>
+                {message.role === "assistant" && message.provider ? (
+                  <span className={cn("text-[10px] font-semibold uppercase tracking-wider", providerStyle(message.provider))}>
+                    {providerLabel(message.provider)}
+                  </span>
+                ) : null}
+              </div>
+              <p className={cn(
+                "mt-1.5 text-sm leading-relaxed",
+                message.role === "user" ? "text-white/90" : "text-[var(--ink-secondary)]",
+              )}>
+                {message.content}
+              </p>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-2xl bg-white px-4 py-3.5 text-sm text-[var(--ink-muted)] shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+            No messages yet.
+          </div>
+        )}
+      </div>
+
+      {/* ─── Error ─── */}
+      {chatError ? (
+        <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {chatError}
+        </div>
+      ) : null}
+
+      {/* ─── Input ─── */}
+      <form
+        onSubmit={(e) => { e.preventDefault(); handleSubmit(draft); }}
+        className="flex items-center gap-3 rounded-2xl bg-[var(--surface-2)] px-4 py-3"
+      >
+        <SparklesIcon className="h-5 w-5 shrink-0 text-[var(--accent)]" />
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Ask about your analysis..."
+          className="min-w-0 flex-1 bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]"
+        />
+        <button
+          type="submit"
+          disabled={disabled}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-30"
+        >
+          <ArrowUpIcon className="h-4 w-4" />
+        </button>
+      </form>
+      <p className="text-xs text-[var(--ink-muted)]">
+        {chatState === "running" ? "Generating reply..." : analysisResult ? `Using ${analysisResult.provider} analysis context.` : "Waiting for analysis result."}
+      </p>
+    </div>
   );
 }
