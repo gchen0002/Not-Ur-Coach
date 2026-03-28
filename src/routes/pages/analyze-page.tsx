@@ -30,9 +30,11 @@ const SAMPLE_INTERVAL_MS = 200;
 const MAX_BUFFERED_FRAMES = 30;
 
 export function AnalyzePage() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
+  const clipUrlRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const processingRef = useRef(false);
@@ -47,6 +49,8 @@ export function AnalyzePage() {
   const [visibleLandmarks, setVisibleLandmarks] = useState(0);
   const [framesProcessed, setFramesProcessed] = useState(0);
   const [bufferedFrames, setBufferedFrames] = useState<BufferedPoseFrame[]>([]);
+  const [sourceType, setSourceType] = useState<"camera" | "clip" | null>(null);
+  const [clipName, setClipName] = useState<string | null>(null);
 
   useEffect(() => {
     const worker = new PoseWorker();
@@ -110,6 +114,10 @@ export function AnalyzePage() {
       }
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
+      if (clipUrlRef.current) {
+        URL.revokeObjectURL(clipUrlRef.current);
+        clipUrlRef.current = null;
+      }
       worker.terminate();
       workerRef.current = null;
     };
@@ -158,14 +166,81 @@ export function AnalyzePage() {
     drawPoseOverlay(canvas, lastLandmarks);
   }, [lastLandmarks]);
 
+  function resetPoseState() {
+    processingRef.current = false;
+    setLastLandmarks([]);
+    setVisibleLandmarks(0);
+    setFramesProcessed(0);
+    setBufferedFrames([]);
+  }
+
+  function stopSampling() {
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    processingRef.current = false;
+  }
+
+  function clearClipUrl() {
+    if (clipUrlRef.current) {
+      URL.revokeObjectURL(clipUrlRef.current);
+      clipUrlRef.current = null;
+    }
+  }
+
+  function clearVideoSource() {
+    const video = videoRef.current;
+
+    if (!video) {
+      return;
+    }
+
+    video.pause();
+    video.srcObject = null;
+    video.removeAttribute("src");
+    video.load();
+  }
+
+  function startSampling(message: string) {
+    if (timerRef.current !== null) {
+      return;
+    }
+
+    timerRef.current = window.setInterval(() => {
+      void captureFrame();
+    }, SAMPLE_INTERVAL_MS);
+    setStatusMessage(message);
+  }
+
+  function stopActiveInput(nextMessage?: string) {
+    stopSampling();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    clearVideoSource();
+    clearClipUrl();
+    resetPoseState();
+    setSourceType(null);
+    setClipName(null);
+    setCameraState("idle");
+
+    const canvas = overlayCanvasRef.current;
+    if (canvas) {
+      const context = canvas.getContext("2d");
+      context?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    if (nextMessage) {
+      setStatusMessage(nextMessage);
+    }
+  }
+
   async function startCamera() {
     try {
+      stopActiveInput();
       setCameraState("starting");
+      setSourceType("camera");
       setPipelineError(null);
-      setLastLandmarks([]);
-      setVisibleLandmarks(0);
-      setFramesProcessed(0);
-      setBufferedFrames([]);
       setStatusMessage("Requesting camera permission...");
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -189,10 +264,7 @@ export function AnalyzePage() {
       setCameraState("live");
 
       if (pipelineState === "ready" && timerRef.current === null) {
-        timerRef.current = window.setInterval(() => {
-          void captureFrame();
-        }, SAMPLE_INTERVAL_MS);
-        setStatusMessage("Camera live. Sampling frames through the worker at 5 FPS.");
+        startSampling("Camera live. Sampling frames through the worker at 5 FPS.");
       } else if (pipelineState !== "error") {
         setStatusMessage("Camera live. Waiting for MediaPipe initialization to finish.");
       }
@@ -203,32 +275,48 @@ export function AnalyzePage() {
     }
   }
 
+  async function handleTrainingClip(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    try {
+      stopActiveInput();
+      setCameraState("starting");
+      setSourceType("clip");
+      setClipName(file.name);
+      setPipelineError(null);
+      setStatusMessage("Loading training clip...");
+
+      const nextClipUrl = URL.createObjectURL(file);
+      clipUrlRef.current = nextClipUrl;
+
+      if (!videoRef.current) {
+        throw new Error("Video element unavailable");
+      }
+
+      videoRef.current.src = nextClipUrl;
+      videoRef.current.muted = true;
+      videoRef.current.playsInline = true;
+      await videoRef.current.play();
+
+      setCameraState("live");
+
+      if (pipelineState === "ready") {
+        startSampling("Training clip loaded. Sampling frames through the worker at 5 FPS.");
+      } else {
+        setStatusMessage("Training clip loaded. Waiting for MediaPipe initialization to finish.");
+      }
+    } catch (error) {
+      clearClipUrl();
+      const message = error instanceof Error ? error.message : "Failed to load training clip";
+      setCameraState("error");
+      setStatusMessage(message);
+    }
+  }
+
   function stopCamera() {
-    if (timerRef.current) {
-      window.clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-
-    processingRef.current = false;
-    setLastLandmarks([]);
-    setVisibleLandmarks(0);
-    setFramesProcessed(0);
-    setBufferedFrames([]);
-    setCameraState("idle");
-    setStatusMessage("Camera stopped. Restart when you want to test framing again.");
-
-    const canvas = overlayCanvasRef.current;
-    if (canvas) {
-      const context = canvas.getContext("2d");
-      context?.clearRect(0, 0, canvas.width, canvas.height);
-    }
+    stopActiveInput("Input stopped. Restart the camera or load another training clip when you want to test again.");
   }
 
   async function captureFrame() {
@@ -268,12 +356,13 @@ export function AnalyzePage() {
 
   useEffect(() => {
     if (pipelineState === "ready" && cameraState === "live" && timerRef.current === null) {
-      timerRef.current = window.setInterval(() => {
-        void captureFrame();
-      }, SAMPLE_INTERVAL_MS);
-      setStatusMessage("MediaPipe ready. Sampling live camera frames through the worker at 5 FPS.");
+      startSampling(
+        sourceType === "clip"
+          ? "MediaPipe ready. Sampling training clip frames through the worker at 5 FPS."
+          : "MediaPipe ready. Sampling live camera frames through the worker at 5 FPS.",
+      );
     }
-  }, [cameraState, pipelineState]);
+  }, [cameraState, pipelineState, sourceType]);
 
   const readinessTone =
     frameQuality.readiness === "ready"
@@ -300,16 +389,30 @@ export function AnalyzePage() {
           >
             Start live test
           </button>
+          <label className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)]">
+            Add training clip
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="video/*"
+              className="hidden"
+              onChange={(event) => {
+                const nextFile = event.target.files?.[0] ?? null;
+                void handleTrainingClip(nextFile);
+                event.currentTarget.value = "";
+              }}
+            />
+          </label>
           <button
             type="button"
             onClick={stopCamera}
-            disabled={cameraState !== "live"}
+            disabled={cameraState !== "live" && cameraState !== "starting"}
             className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Stop
           </button>
           <p className="text-sm text-[var(--ink-soft)]">
-            Best test: full body in frame, 6-8 feet back, neutral background, decent light, ideally a clean side view.
+            Best test: full body in frame, 6-8 feet back, neutral background, decent light, ideally a clean side view. Training clips work too.
           </p>
         </div>
       </SurfaceCard>
@@ -328,6 +431,24 @@ export function AnalyzePage() {
                 autoPlay
                 muted
                 playsInline
+                controls={sourceType === "clip"}
+                onPlay={() => {
+                  if (sourceType === "clip" && pipelineState === "ready" && cameraState === "live") {
+                    startSampling("Training clip playing. Sampling frames through the worker at 5 FPS.");
+                  }
+                }}
+                onPause={() => {
+                  if (sourceType === "clip") {
+                    stopSampling();
+                    setStatusMessage("Training clip paused. Resume playback to continue pose sampling.");
+                  }
+                }}
+                onEnded={() => {
+                  if (sourceType === "clip") {
+                    stopSampling();
+                    setStatusMessage("Training clip finished. Scrub, replay, or load another clip to keep testing.");
+                  }
+                }}
               />
               <canvas
                 ref={overlayCanvasRef}
@@ -359,6 +480,7 @@ export function AnalyzePage() {
             </div>
             {[
               ["Pipeline", pipelineState],
+              ["Source", sourceType ?? "none"],
               ["Camera", cameraState],
               ["Frames processed", String(framesProcessed)],
               ["Visible landmarks", String(visibleLandmarks)],
@@ -379,6 +501,7 @@ export function AnalyzePage() {
               <p className="mt-2">
                 width ratio: {cameraAngle.widthRatio ?? "-"} | depth ratio: {cameraAngle.depthRatio ?? "-"}
               </p>
+              {clipName ? <p className="mt-2">clip: {clipName}</p> : null}
             </div>
             {frameQuality.issues.length > 0 ? (
               <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
