@@ -39,3 +39,33 @@ export type AnalyzePayload = {
   };
   geminiInstructions: string[];
 };
+
+export type AnalysisCue = {
+  cue: string;
+  priority: "high" | "medium" | "low";
+};
+
+export type AnalysisScores = {
+  overall: number | null;
+  rom: number | null;
+  tensionProfile: number | null;
+  tempo: number | null;
+  symmetry: number | null;
+  fatigueManagement: number | null;
+};
+
+export type AnalysisDraft = {
+  accepted: boolean;
+  mode: AnalyzeDecision;
+  confidence: AnalyzeConfidence;
+  summary: string;
+  basicAnalysis: {
+    summary: string;
+    whatYoureDoingWell: string[];
+    whatToFix: string[];
+  };
+  scores: AnalysisScores;
+  cues: AnalysisCue[];
+  risks: string[];
+  nextStep: string;
+};

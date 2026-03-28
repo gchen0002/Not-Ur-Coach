@@ -1,6 +1,7 @@
 import { actionGeneric } from "convex/server";
 import { v } from "convex/values";
 import type { AnalyzePayload } from "../src/lib/analysis-contract";
+import { createAnalysisDraft } from "../src/lib/analysis-draft";
 
 const analyzePayloadValidator = v.object({
   sourceType: v.union(v.literal("camera"), v.literal("clip"), v.null()),
@@ -43,34 +44,21 @@ const analyzePayloadValidator = v.object({
   geminiInstructions: v.array(v.string()),
 });
 
-function summarizeDecision(payload: AnalyzePayload) {
-  if (payload.decision === "reject") {
-    return "Reject clip before Gemini scoring; return a concise capture-quality explanation instead.";
-  }
-
-  if (payload.decision === "best_effort") {
-    return "Allow Gemini best-effort analysis with crop and confidence warnings.";
-  }
-
-  return "Allow standard Gemini analysis with normal scoring behavior.";
-}
-
 export const analyzeClip = actionGeneric({
   args: {
     payload: analyzePayloadValidator,
   },
   handler: async (_ctx, args) => {
     const payload = args.payload as AnalyzePayload;
+    const draft = createAnalysisDraft(payload);
 
     return {
-      accepted: payload.decision !== "reject",
-      mode: payload.decision,
-      confidence: payload.confidence,
-      summary: summarizeDecision(payload),
-      nextStep:
-        payload.decision === "reject"
-          ? "Ask the user to re-record with more of the body visible."
-          : "Pass this payload into the full Gemini analysis pipeline once Block 5 is implemented.",
+      accepted: draft.accepted,
+      mode: draft.mode,
+      confidence: draft.confidence,
+      summary: draft.summary,
+      nextStep: draft.nextStep,
+      draft,
       payload,
     };
   },

@@ -6,6 +6,7 @@ import {
 } from "@mediapipe/tasks-vision";
 import { SurfaceCard } from "@/components/ui/surface-card";
 import { buildAnalyzePayload, type BufferedPoseFrame } from "@/lib/analysis-payload";
+import { createAnalysisDraft } from "@/lib/analysis-draft";
 import { getLiveAngles } from "@/lib/angles";
 import { detectCameraAngle } from "@/lib/camera-angle";
 import { drawPoseOverlay } from "@/lib/pose-draw";
@@ -201,6 +202,7 @@ export function AnalyzePage() {
       }),
     [bufferedFrames, cameraAngle, clipName, frameQuality, liveAngles, sourceType, windowQuality],
   );
+  const analysisDraft = useMemo(() => createAnalysisDraft(analyzePayload), [analyzePayload]);
 
   useEffect(() => {
     const canvas = overlayCanvasRef.current;
@@ -862,6 +864,18 @@ export function AnalyzePage() {
           <div className="rounded-[24px] bg-[var(--surface-2)] p-4">
             <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-6 text-[var(--ink-soft)]">
               {JSON.stringify(analyzePayload, null, 2)}
+            </pre>
+          </div>
+        </SurfaceCard>
+
+        <SurfaceCard
+          eyebrow="Analysis Draft"
+          title="Backend fallback preview"
+          description="This is the first-pass analysis draft the Convex action can already generate before the real Gemini call is wired in."
+        >
+          <div className="rounded-[24px] bg-[var(--surface-2)] p-4">
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-6 text-[var(--ink-soft)]">
+              {JSON.stringify(analysisDraft, null, 2)}
             </pre>
           </div>
         </SurfaceCard>
