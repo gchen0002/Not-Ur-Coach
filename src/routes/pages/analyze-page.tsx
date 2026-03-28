@@ -133,6 +133,9 @@ export function AnalyzePage() {
   const liveSessionRef = useRef<Session | null>(null);
   const liveAutoSnapshotTimerRef = useRef<number | null>(null);
   const liveSnapshotInFlightRef = useRef(false);
+  const liveMicStreamRef = useRef<MediaStream | null>(null);
+  const liveMicRecorderRef = useRef<MediaRecorder | null>(null);
+  const liveAssistantBufferRef = useRef("");
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -186,9 +189,11 @@ export function AnalyzePage() {
   const [liveCoachContext, setLiveCoachContext] = useState<LiveCoachContextResult | null>(null);
   const [liveCoachConnectionState, setLiveCoachConnectionState] = useState<"idle" | "connecting" | "connected" | "error">("idle");
   const [liveCoachConnectionError, setLiveCoachConnectionError] = useState<string | null>(null);
-  const [liveCoachTranscript, setLiveCoachTranscript] = useState<Array<{ role: "assistant" | "system"; content: string }>>([]);
+  const [liveCoachTranscript, setLiveCoachTranscript] = useState<Array<{ role: "assistant" | "system" | "user"; content: string }>>([]);
   const [liveExerciseOverride, setLiveExerciseOverride] = useState("");
   const [liveAutoSnapshotEnabled, setLiveAutoSnapshotEnabled] = useState(true);
+  const [liveMicState, setLiveMicState] = useState<"idle" | "requesting" | "live" | "error">("idle");
+  const [liveMicError, setLiveMicError] = useState<string | null>(null);
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
 
   const recordingSupported = typeof MediaRecorder !== "undefined";
@@ -248,6 +253,10 @@ export function AnalyzePage() {
         window.clearInterval(liveAutoSnapshotTimerRef.current);
         liveAutoSnapshotTimerRef.current = null;
       }
+      liveMicRecorderRef.current?.stop();
+      liveMicRecorderRef.current = null;
+      liveMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+      liveMicStreamRef.current = null;
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
       if (clipUrlRef.current) {
@@ -373,6 +382,10 @@ export function AnalyzePage() {
 
   function resetPoseState() {
     processingRef.current = false;
+    liveMicRecorderRef.current?.stop();
+    liveMicRecorderRef.current = null;
+    liveMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveMicStreamRef.current = null;
     liveSessionRef.current?.close();
     liveSessionRef.current = null;
     if (liveAutoSnapshotTimerRef.current) {
@@ -401,6 +414,8 @@ export function AnalyzePage() {
     setLiveCoachTranscript([]);
     setLiveExerciseOverride("");
     setLiveAutoSnapshotEnabled(true);
+    setLiveMicState("idle");
+    setLiveMicError(null);
     setVideoAspectRatio(16 / 9);
   }
 
@@ -1089,11 +1104,93 @@ export function AnalyzePage() {
   }
 
   function disconnectLiveCoach() {
+    liveMicRecorderRef.current?.stop();
+    liveMicRecorderRef.current = null;
+    liveMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveMicStreamRef.current = null;
+    setLiveMicState("idle");
+    setLiveMicError(null);
     void persistLiveCoachTranscriptSnapshot();
     liveSessionRef.current?.close();
     liveSessionRef.current = null;
     setLiveCoachConnectionState("idle");
     setLiveCoachConnectionError(null);
+  }
+
+  function speakLiveCoachMessage(text: string) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    speechUtteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  async function startLiveMic() {
+    const session = liveSessionRef.current;
+
+    if (!session) {
+      setLiveMicState("error");
+      setLiveMicError("Start the Gemini Live session before turning on the mic.");
+      return;
+    }
+
+    if (liveMicState === "live") {
+      return;
+    }
+
+    setLiveMicState("requesting");
+    setLiveMicError(null);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]
+        .find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
+      const recorder = mimeType.length > 0
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      liveMicStreamRef.current = stream;
+      liveMicRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        const activeSession = liveSessionRef.current;
+
+        if (!activeSession || event.data.size === 0) {
+          return;
+        }
+
+        const audioBlob = event.data as unknown as Parameters<Session["sendRealtimeInput"]>[0]["audio"];
+        activeSession.sendRealtimeInput({ audio: audioBlob });
+      };
+      recorder.onerror = () => {
+        setLiveMicState("error");
+        setLiveMicError("Microphone streaming failed.");
+      };
+      recorder.onstop = () => {
+        const activeSession = liveSessionRef.current;
+        if (activeSession) {
+          activeSession.sendRealtimeInput({ audioStreamEnd: true });
+        }
+      };
+      recorder.start(450);
+      setLiveMicState("live");
+    } catch (error) {
+      setLiveMicState("error");
+      setLiveMicError(error instanceof Error ? error.message : "Failed to start microphone input.");
+    }
+  }
+
+  function stopLiveMic() {
+    liveMicRecorderRef.current?.stop();
+    liveMicRecorderRef.current = null;
+    liveMicStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveMicStreamRef.current = null;
+    setLiveMicState("idle");
+    setLiveMicError(null);
   }
 
   async function fetchLiveCoachContext() {
@@ -1171,6 +1268,7 @@ export function AnalyzePage() {
         callbacks: {
           onopen: () => {
             setLiveCoachConnectionState("connected");
+            liveAssistantBufferRef.current = "";
             setLiveCoachTranscript((current) => [
               ...current,
               {
@@ -1180,19 +1278,36 @@ export function AnalyzePage() {
             ]);
           },
           onmessage: (message) => {
-            const text = message.text?.trim();
-
-            if (!text) {
-              return;
+            const inputTranscription = message.serverContent?.inputTranscription;
+            const transcribedInput = inputTranscription?.text?.trim();
+            if (inputTranscription?.finished && transcribedInput) {
+              setLiveCoachTranscript((current) => [
+                ...current,
+                { role: "user" as const, content: transcribedInput },
+              ].slice(-16));
             }
 
-            setLiveCoachTranscript((current) => [...current, { role: "assistant" as const, content: text }].slice(-16));
+            const text = message.text?.trim();
+            if (text) {
+              liveAssistantBufferRef.current = `${liveAssistantBufferRef.current} ${text}`.trim();
+            }
+
+            if (message.serverContent?.turnComplete && liveAssistantBufferRef.current) {
+              const completedMessage = liveAssistantBufferRef.current;
+              liveAssistantBufferRef.current = "";
+              setLiveCoachTranscript((current) => [
+                ...current,
+                { role: "assistant" as const, content: completedMessage },
+              ].slice(-16));
+              speakLiveCoachMessage(completedMessage);
+            }
           },
           onerror: (event) => {
             setLiveCoachConnectionState("error");
             setLiveCoachConnectionError(event.message || "Gemini Live connection failed.");
           },
           onclose: () => {
+            stopLiveMic();
             liveSessionRef.current = null;
             setLiveCoachConnectionState("idle");
           },
@@ -1673,6 +1788,10 @@ export function AnalyzePage() {
         transcript={liveCoachTranscript}
         autoSnapshotEnabled={liveAutoSnapshotEnabled}
         onToggleAutoSnapshots={() => setLiveAutoSnapshotEnabled((current) => !current)}
+        micState={liveMicState}
+        micError={liveMicError}
+        onStartMic={startLiveMic}
+        onStopMic={stopLiveMic}
         onPrepare={prepareLiveCoach}
         onConnect={connectLiveCoach}
         onDisconnect={disconnectLiveCoach}

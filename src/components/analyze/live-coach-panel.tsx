@@ -10,9 +10,13 @@ type LiveCoachPanelProps = {
   onExerciseOverrideChange: (value: string) => void;
   connectionState: "idle" | "connecting" | "connected" | "error";
   connectionError: string | null;
-  transcript: Array<{ role: "assistant" | "system"; content: string }>;
+  transcript: Array<{ role: "assistant" | "system" | "user"; content: string }>;
   autoSnapshotEnabled: boolean;
   onToggleAutoSnapshots: () => void;
+  micState: "idle" | "requesting" | "live" | "error";
+  micError: string | null;
+  onStartMic: () => Promise<void>;
+  onStopMic: () => void;
   onPrepare: () => Promise<void>;
   onConnect: () => Promise<void>;
   onDisconnect: () => void;
@@ -31,6 +35,10 @@ export function LiveCoachPanel({
   transcript,
   autoSnapshotEnabled,
   onToggleAutoSnapshots,
+  micState,
+  micError,
+  onStartMic,
+  onStopMic,
   onPrepare,
   onConnect,
   onDisconnect,
@@ -124,11 +132,38 @@ export function LiveCoachPanel({
           >
             {autoSnapshotEnabled ? "Auto snapshots on" : "Auto snapshots off"}
           </button>
+
+          {micState === "live" ? (
+            <button
+              type="button"
+              onClick={onStopMic}
+              className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)]"
+            >
+              Stop mic
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                void onStartMic();
+              }}
+              disabled={!connected || micState === "requesting"}
+              className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {micState === "requesting" ? "Starting mic..." : "Start mic"}
+            </button>
+          )}
         </div>
 
         <p className="text-xs uppercase tracking-[0.16em] text-[var(--ink-muted)]">
           {autoSnapshotEnabled ? "Connected sessions send a fresh snapshot roughly every 2 seconds." : "Auto snapshots are paused; use manual snapshots only."}
         </p>
+
+        {micError ? (
+          <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {micError}
+          </div>
+        ) : null}
 
         {prepError ? (
           <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">

@@ -77,6 +77,9 @@ export const createLiveAuthToken = actionGeneric({
             config: {
               responseModalities: [Modality.TEXT],
               systemInstruction: buildSystemInstruction(request),
+              inputAudioTranscription: {
+                languageCodes: ["en-US"],
+              },
               sessionResumption: {
                 transparent: true,
               },
