@@ -1,4 +1,4 @@
-import type { AnalysisRunResult } from "@/lib/analysis-contract";
+import type { AnalysisRunResult } from "./analysis-contract";
 
 export type ChatMessage = {
   id: string;

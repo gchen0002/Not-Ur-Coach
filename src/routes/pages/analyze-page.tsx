@@ -9,13 +9,15 @@ import { makeFunctionReference } from "convex/server";
 import { AnalysisResultsPanel } from "@/components/analyze/analysis-results-panel";
 import { ChatPanel } from "@/components/analyze/chat-panel";
 import { ProgressHistoryPanel } from "@/components/analyze/progress-history-panel";
-import { SurfaceCard } from "@/components/ui/surface-card";
+import { TtsPanel } from "@/components/analyze/tts-panel";
 import { appendAnalysisHistory, loadAnalysisHistory } from "@/lib/analysis-history";
 import { buildAnalyzePayload, type BufferedPoseFrame } from "@/lib/analysis-payload";
 import { createAnalysisDraft, createLocalAnalysisRun } from "@/lib/analysis-draft";
 import type { AnalysisHistoryEntry, AnalysisRunResult, AnalyzePayload } from "@/lib/analysis-contract";
 import type { ChatMessage, ChatReply, ChatRequest } from "@/lib/chat-contract";
 import { createLocalChatReply } from "@/lib/chat-draft";
+import type { TtsRequest, TtsResponse } from "@/lib/tts-contract";
+import { createLocalTtsResponse } from "@/lib/tts-draft";
 import { getLiveAngles } from "@/lib/angles";
 import { detectCameraAngle } from "@/lib/camera-angle";
 import { drawPoseOverlay } from "@/lib/pose-draw";
@@ -125,6 +127,7 @@ export function AnalyzePage() {
   const timerRef = useRef<number | null>(null);
   const recordingTimerRef = useRef<number | null>(null);
   const processingRef = useRef(false);
+  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   const [cameraState, setCameraState] = useState<"idle" | "starting" | "live" | "error">("idle");
   const [pipelineState, setPipelineState] = useState<"booting" | "ready" | "error">("booting");
@@ -150,9 +153,13 @@ export function AnalyzePage() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatState, setChatState] = useState<"idle" | "running" | "error">("idle");
   const [chatError, setChatError] = useState<string | null>(null);
+  const [ttsState, setTtsState] = useState<"idle" | "loading" | "speaking" | "error">("idle");
+  const [ttsError, setTtsError] = useState<string | null>(null);
+  const [ttsResponse, setTtsResponse] = useState<TtsResponse | null>(null);
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
 
   const recordingSupported = typeof MediaRecorder !== "undefined";
+  const browserSpeechSupported = typeof window !== "undefined" && "speechSynthesis" in window;
   const convexClient = router.options.context.convexClient;
 
   useEffect(() => {
@@ -209,6 +216,9 @@ export function AnalyzePage() {
       if (clipUrlRef.current) {
         URL.revokeObjectURL(clipUrlRef.current);
         clipUrlRef.current = null;
+      }
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
       }
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
@@ -311,6 +321,9 @@ export function AnalyzePage() {
     setChatMessages([]);
     setChatState("idle");
     setChatError(null);
+    setTtsState("idle");
+    setTtsError(null);
+    setTtsResponse(null);
     setVideoAspectRatio(16 / 9);
   }
 
@@ -705,6 +718,75 @@ export function AnalyzePage() {
     }
   }
 
+  function stopSpeech() {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    speechUtteranceRef.current = null;
+    setTtsState("idle");
+  }
+
+  function speakScript(script: string) {
+    if (!browserSpeechSupported) {
+      throw new Error("This browser does not support spoken feedback playback.");
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(script);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.onend = () => {
+      speechUtteranceRef.current = null;
+      setTtsState("idle");
+    };
+    utterance.onerror = () => {
+      speechUtteranceRef.current = null;
+      setTtsState("error");
+      setTtsError("Browser speech playback failed.");
+    };
+    speechUtteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+    setTtsState("speaking");
+  }
+
+  async function playTts() {
+    if (!analysisResult) {
+      return;
+    }
+
+    setTtsState("loading");
+    setTtsError(null);
+
+    try {
+      let response: TtsResponse;
+
+      if (!convexClient) {
+        response = createLocalTtsResponse(analysisResult);
+      } else {
+        const ttsRef = makeFunctionReference<"action", TtsRequest, TtsResponse>("tts:speakAnalysis");
+        response = await convexClient.action(ttsRef, { analysisResult });
+      }
+
+      setTtsResponse(response);
+      setTtsError(response.error);
+      speakScript(response.script);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to generate spoken feedback.";
+      const fallback = createLocalTtsResponse(analysisResult);
+      setTtsResponse({ ...fallback, provider: "heuristic", error: message });
+      setTtsError(message);
+
+      try {
+        speakScript(fallback.script);
+      } catch (playbackError) {
+        setTtsState("error");
+        setTtsError(
+          playbackError instanceof Error ? playbackError.message : "Failed to play spoken feedback.",
+        );
+      }
+    }
+  }
+
   async function captureFrame() {
     const video = videoRef.current;
     const landmarker = landmarkerRef.current;
@@ -1074,6 +1156,15 @@ export function AnalyzePage() {
 
       {/* ─── Analysis results ─── */}
       <AnalysisResultsPanel result={analysisPreview} isPreview={!analysisResult} />
+
+      <TtsPanel
+        canSpeak={Boolean(analysisResult)}
+        ttsState={ttsState}
+        ttsError={ttsError}
+        lastResponse={ttsResponse}
+        onSpeak={playTts}
+        onStop={stopSpeech}
+      />
 
       {/* ─── Progress + Chat side by side ─── */}
       <div className="grid gap-6 lg:grid-cols-2">

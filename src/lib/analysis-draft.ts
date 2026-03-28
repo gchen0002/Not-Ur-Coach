@@ -4,7 +4,7 @@ import type {
   AnalysisRunResult,
   AnalysisScores,
   AnalyzePayload,
-} from "@/lib/analysis-contract";
+} from "./analysis-contract";
 
 function clampScore(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));

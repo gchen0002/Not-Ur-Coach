@@ -1,6 +1,6 @@
 import type { AnalysisRunResult } from "@/lib/analysis-contract";
 import { cn } from "@/lib/utils";
-import { SparklesIcon, CheckCircleIcon, ExclamationTriangleIcon, LightBulbIcon, ShieldExclamationIcon } from "@heroicons/react/24/outline";
+import { CheckCircleIcon, ExclamationTriangleIcon, LightBulbIcon, ShieldExclamationIcon } from "@heroicons/react/24/outline";
 
 function formatScore(value: number | null) {
   return value === null ? "--" : String(Math.round(value));

@@ -1,5 +1,5 @@
-import type { AnalysisRunResult } from "@/lib/analysis-contract";
-import type { ChatMessage, ChatReply } from "@/lib/chat-contract";
+import type { AnalysisRunResult } from "./analysis-contract";
+import type { ChatMessage, ChatReply } from "./chat-contract";
 
 function pickTopCue(result: AnalysisRunResult) {
   return result.draft.cues[0]?.cue ?? result.draft.nextStep;
