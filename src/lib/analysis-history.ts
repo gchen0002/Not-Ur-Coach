@@ -20,6 +20,7 @@ export function toAnalysisHistoryEntry(result: AnalysisRunResult): AnalysisHisto
     repCount: result.payload.repStats.detectedRepCount,
     averageRepDurationMs: result.payload.repStats.averageRepDurationMs,
     averageBottomKneeAngle: result.payload.repStats.averageBottomKneeAngle,
+    averageBottomPrimaryMetricValue: result.payload.repStats.averageBottomPrimaryMetricValue,
     cameraAngle: result.payload.cameraAngle.label,
     summary: result.summary,
     cues: result.draft.cues.map((cue) => cue.cue),

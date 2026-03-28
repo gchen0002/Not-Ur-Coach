@@ -5,6 +5,7 @@ import type {
   AnalysisScores,
   AnalyzePayload,
 } from "./analysis-contract";
+import { resolveExerciseMovementProfile } from "./exercise-profile";
 
 function clampScore(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -40,6 +41,13 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
           ? payload.quality.windowIssues
           : ["Re-record with the torso, hips, knees, and ankles visible for most of the clip."],
       },
+      nerdAnalysis: {
+        summary: "The visible data is too incomplete for a useful kinematic breakdown.",
+        movementDiagnosis: [],
+        kinematicEvidence: [],
+        likelyConstraints: payload.quality.windowIssues.slice(0, 3),
+        cueRationale: [],
+      },
       scores: {
         overall: null,
         rom: null,
@@ -58,6 +66,11 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
   const whatYoureDoingWell: string[] = [];
   const whatToFix: string[] = [];
   const risks: string[] = [];
+  const exerciseProfile = resolveExerciseMovementProfile(payload.userContext.exerciseName ?? payload.clipName);
+  const primaryMetricValue = payload.repStats.averageBottomPrimaryMetricValue;
+  const depthIndicator = exerciseProfile.primaryMetric === "hip_flexion"
+    ? primaryMetricValue ?? payload.motionSummary.primaryHip
+    : average([payload.motionSummary.primaryKnee, payload.motionSummary.leftKnee, payload.motionSummary.rightKnee]);
 
   const landmarkCoverageScore = clampScore(payload.frameStats.averageVisibleLandmarks * 3);
   const symmetryGap =
@@ -70,10 +83,11 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
   const trunkLeanScore =
     payload.motionSummary.trunkLean === null
       ? 65
-      : clampScore(100 - Math.max(0, Math.abs(payload.motionSummary.trunkLean - 35) * 2.2));
-  const depthIndicator = average([payload.motionSummary.leftKnee, payload.motionSummary.rightKnee]);
+      : clampScore(100 - Math.max(0, Math.abs(payload.motionSummary.trunkLean - (exerciseProfile.pattern === "hinge" ? 45 : 35)) * 2.2));
   const romScore =
-    depthIndicator === null ? 60 : clampScore(100 - Math.min(45, Math.abs(depthIndicator - 95) * 1.4));
+    depthIndicator === null
+      ? 60
+      : clampScore(100 - Math.min(45, Math.abs(depthIndicator - exerciseProfile.romIdeal) * 1.4));
   const tensionProfileScore = clampScore((trunkLeanScore * 0.45) + (romScore * 0.25) + (landmarkCoverageScore * 0.3));
   const tempoScore =
     payload.repStats.averageRepDurationMs === null
@@ -110,11 +124,13 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
     pushCue(cues, "Re-record from slightly farther back so Gemini can see the full lower body for every rep.", "high");
   }
 
-  if (payload.motionSummary.trunkLean !== null && payload.motionSummary.trunkLean > 55) {
+  if (payload.motionSummary.trunkLean !== null && payload.motionSummary.trunkLean > (exerciseProfile.pattern === "hinge" ? 72 : 55)) {
     whatToFix.push("Your torso angle looks aggressive, which can shift the movement away from the intended pattern.");
-    pushCue(cues, "Try to keep the torso more stacked so the rep does not fold forward early.", "high");
+    pushCue(cues, exerciseProfile.pattern === "hinge"
+      ? "Keep the hinge controlled so the torso angle does not run away faster than the hips travel back."
+      : "Try to keep the torso more stacked so the rep does not fold forward early.", "high");
     risks.push("Excess forward trunk angle can make load distribution harder to judge and may increase low-back demand.");
-  } else if (payload.motionSummary.trunkLean !== null && payload.motionSummary.trunkLean < 15) {
+  } else if (payload.motionSummary.trunkLean !== null && payload.motionSummary.trunkLean < (exerciseProfile.pattern === "hinge" ? 20 : 15)) {
     pushCue(cues, "A little more controlled forward torso travel may help you reach the intended bottom position.", "medium");
   }
 
@@ -126,11 +142,17 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
     whatYoureDoingWell.push("The visible knee angles look relatively balanced side to side.");
   }
 
-  if (depthIndicator !== null && depthIndicator > 135) {
-    whatToFix.push("The movement looks shallow in the visible frames, so range of motion may be limited.");
-    pushCue(cues, "If the goal is a full rep, sit deeper while keeping the same balance and control.", "medium");
-  } else if (depthIndicator !== null && depthIndicator < 90) {
-    whatYoureDoingWell.push("You are reaching a deeper knee position in the captured frames.");
+  if (depthIndicator !== null && depthIndicator > exerciseProfile.shallowThreshold) {
+    whatToFix.push(exerciseProfile.pattern === "hinge"
+      ? "The hinge range looks short in the visible frames, so the posterior-chain stretch may be limited."
+      : "The movement looks shallow in the visible frames, so range of motion may be limited.");
+    pushCue(cues, exerciseProfile.pattern === "hinge"
+      ? "If the goal is hamstrings or erectors, reach a deeper hinge without losing control or visibility."
+      : "If the goal is a full rep, sit deeper while keeping the same balance and control.", "medium");
+  } else if (depthIndicator !== null && depthIndicator <= exerciseProfile.romIdeal) {
+    whatYoureDoingWell.push(exerciseProfile.pattern === "hinge"
+      ? "The visible frames show a more meaningful hinge depth for posterior-chain work."
+      : "You are reaching a deeper knee position in the captured frames.");
   }
 
   if (payload.repStats.detectedRepCount === 0) {
@@ -173,6 +195,25 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
           : "The clip has enough visible data for a normal first-pass technique summary.",
       whatYoureDoingWell,
       whatToFix,
+    },
+    nerdAnalysis: {
+      summary: exerciseProfile.pattern === "hinge"
+        ? "Posterior-chain pattern quality is being estimated from the visible hinge depth, trunk angle, and clip quality window."
+        : "Lower-body pattern quality is being estimated from visible joint depth, trunk position, and clip quality window.",
+      movementDiagnosis: [
+        `Primary metric: ${payload.repStats.primaryMetric}`,
+        payload.cameraAngle.label === "sagittal"
+          ? "Camera angle is close to a useful side view."
+          : `Camera angle currently reads as ${payload.cameraAngle.label}.`,
+      ],
+      kinematicEvidence: [
+        payload.motionSummary.trunkLean !== null ? `Trunk lean: ${payload.motionSummary.trunkLean}deg.` : "Trunk lean unavailable.",
+        payload.repStats.averageBottomPrimaryMetricValue !== null
+          ? `Bottom ${payload.repStats.primaryMetric}: ${payload.repStats.averageBottomPrimaryMetricValue}deg.`
+          : `Bottom ${payload.repStats.primaryMetric} could not be stabilized from the visible reps.`,
+      ],
+      likelyConstraints: payload.quality.windowIssues.slice(0, 3),
+      cueRationale: cues.slice(0, 3).map((cue) => cue.cue),
     },
     scores,
     cues,

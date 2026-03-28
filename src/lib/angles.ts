@@ -22,6 +22,9 @@ export type LiveAngles = {
   rightAnkle: number | null;
   trunkLean: number | null;
   dominantSide: "left" | "right" | null;
+  primaryKnee: number | null;
+  primaryHip: number | null;
+  primaryAnkle: number | null;
   metrics: AngleMetric[];
 };
 
@@ -71,38 +74,54 @@ export function calculateAngle(
   return round((Math.acos(cosine) * 180) / Math.PI);
 }
 
+function calculateSegmentLean(
+  shoulder: PoseLandmarkPoint | null,
+  hip: PoseLandmarkPoint | null,
+) {
+  if (!shoulder || !hip || !isLandmarkVisible(shoulder) || !isLandmarkVisible(hip)) {
+    return null;
+  }
+
+  const torsoLength = distance2d(shoulder, hip);
+
+  if (torsoLength === 0) {
+    return null;
+  }
+
+  const dx = shoulder.x - hip.x;
+  const dy = hip.y - shoulder.y;
+  return round((Math.atan2(Math.abs(dx), Math.abs(dy)) * 180) / Math.PI);
+}
+
 function calculateTrunkLean(landmarks: PoseLandmarkPoint[]) {
   const leftShoulder = getLandmark(landmarks, POSE_LANDMARK_INDEX.leftShoulder);
   const rightShoulder = getLandmark(landmarks, POSE_LANDMARK_INDEX.rightShoulder);
   const leftHip = getLandmark(landmarks, POSE_LANDMARK_INDEX.leftHip);
   const rightHip = getLandmark(landmarks, POSE_LANDMARK_INDEX.rightHip);
 
-  if (
-    !leftShoulder ||
-    !rightShoulder ||
-    !leftHip ||
-    !rightHip ||
-    !isLandmarkVisible(leftShoulder) ||
-    !isLandmarkVisible(rightShoulder) ||
-    !isLandmarkVisible(leftHip) ||
-    !isLandmarkVisible(rightHip)
-  ) {
-    return null;
+  const canUseMidpoint =
+    leftShoulder &&
+    rightShoulder &&
+    leftHip &&
+    rightHip &&
+    isLandmarkVisible(leftShoulder) &&
+    isLandmarkVisible(rightShoulder) &&
+    isLandmarkVisible(leftHip) &&
+    isLandmarkVisible(rightHip);
+
+  if (canUseMidpoint && leftShoulder && rightShoulder && leftHip && rightHip) {
+    const shoulderMid = midpoint(leftShoulder, rightShoulder);
+    const hipMid = midpoint(leftHip, rightHip);
+    return calculateSegmentLean(shoulderMid, hipMid);
   }
 
-  const shoulderMid = midpoint(leftShoulder, rightShoulder);
-  const hipMid = midpoint(leftHip, rightHip);
-  const torsoLength = distance2d(shoulderMid, hipMid);
+  const preferredSide = dominantSide(landmarks);
 
-  if (torsoLength === 0) {
-    return null;
+  if (preferredSide === "right") {
+    return calculateSegmentLean(rightShoulder, rightHip) ?? calculateSegmentLean(leftShoulder, leftHip);
   }
 
-  const dx = shoulderMid.x - hipMid.x;
-  const dy = hipMid.y - shoulderMid.y;
-  const lean = Math.abs((Math.atan2(Math.abs(dx), Math.abs(dy)) * 180) / Math.PI);
-
-  return round(lean);
+  return calculateSegmentLean(leftShoulder, leftHip) ?? calculateSegmentLean(rightShoulder, rightHip);
 }
 
 function dominantSide(landmarks: PoseLandmarkPoint[]): "left" | "right" | null {
@@ -152,10 +171,20 @@ export function getLiveAngles(landmarks: PoseLandmarkPoint[]): LiveAngles {
     dominantSide: dominantSide(landmarks),
   } as const;
 
+  const primarySide = liveAngles.dominantSide === "right" ? "right" : "left";
+  const primaryKnee = primarySide === "right" ? liveAngles.rightKnee : liveAngles.leftKnee;
+  const primaryHip = primarySide === "right" ? liveAngles.rightHip : liveAngles.leftHip;
+  const primaryAnkle = primarySide === "right" ? liveAngles.rightAnkle : liveAngles.leftAnkle;
+
   return {
     ...liveAngles,
+    primaryKnee,
+    primaryHip,
+    primaryAnkle,
     metrics: [
       { label: "Trunk lean", value: liveAngles.trunkLean, unit: "deg" },
+      { label: "Primary hip", value: primaryHip, unit: "deg" },
+      { label: "Primary knee", value: primaryKnee, unit: "deg" },
       { label: "Left knee", value: liveAngles.leftKnee, unit: "deg" },
       { label: "Right knee", value: liveAngles.rightKnee, unit: "deg" },
       { label: "Left hip", value: liveAngles.leftHip, unit: "deg" },

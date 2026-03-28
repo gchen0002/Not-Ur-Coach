@@ -34,6 +34,7 @@ function getConfidence(decision: AnalyzeDecision): AnalyzeConfidence {
 export function buildAnalyzePayload({
   sourceType,
   clipName,
+  userContext,
   bufferedFrames,
   frameQuality,
   windowQuality,
@@ -42,6 +43,7 @@ export function buildAnalyzePayload({
 }: {
   sourceType: AnalyzeInputSource;
   clipName: string | null;
+  userContext: AnalyzePayload["userContext"];
   bufferedFrames: BufferedPoseFrame[];
   frameQuality: PoseFrameQuality;
   windowQuality: PoseWindowQuality;
@@ -49,7 +51,7 @@ export function buildAnalyzePayload({
   liveAngles: LiveAngles;
 }): AnalyzePayload {
   const sampledFrames = bufferedFrames.length;
-  const repSummary = summarizeReps(bufferedFrames);
+  const repSummary = summarizeReps(bufferedFrames, { exerciseName: userContext.exerciseName ?? clipName });
   const averageVisibleLandmarks =
     sampledFrames === 0
       ? 0
@@ -85,6 +87,7 @@ export function buildAnalyzePayload({
   return {
     sourceType,
     clipName,
+    userContext,
     decision: windowQuality.analysisReadiness,
     recommendation: windowQuality.recommendation,
     confidence: getConfidence(windowQuality.analysisReadiness),
@@ -110,6 +113,8 @@ export function buildAnalyzePayload({
     motionSummary: {
       dominantSide: liveAngles.dominantSide,
       trunkLean: liveAngles.trunkLean,
+      primaryKnee: liveAngles.primaryKnee,
+      primaryHip: liveAngles.primaryHip,
       leftKnee: liveAngles.leftKnee,
       rightKnee: liveAngles.rightKnee,
       leftHip: liveAngles.leftHip,
@@ -119,6 +124,7 @@ export function buildAnalyzePayload({
       detectedRepCount: repSummary.detectedRepCount,
       averageRepDurationMs: repSummary.averageRepDurationMs,
       averageBottomKneeAngle: repSummary.averageBottomKneeAngle,
+      averageBottomPrimaryMetricValue: repSummary.averageBottomPrimaryMetricValue,
       primaryMetric: repSummary.primaryMetric,
     },
     reps: repSummary.reps,

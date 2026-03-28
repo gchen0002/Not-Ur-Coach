@@ -1,3 +1,5 @@
+import type { ExercisePrimaryMetric } from "./exercise-profile";
+
 export type AnalyzeInputSource = "camera" | "clip" | null;
 
 export type AnalyzeDecision = "full" | "best_effort" | "reject";
@@ -7,6 +9,13 @@ export type AnalyzeConfidence = "high" | "medium" | "low";
 export type AnalyzePayload = {
   sourceType: AnalyzeInputSource;
   clipName: string | null;
+  userContext: {
+    exerciseName: string | null;
+    targetMuscles: string[];
+    sessionIntent: "form_check" | "work_set" | "demo";
+    resistanceType: "bodyweight" | "free_weight" | "machine" | "unknown";
+    notes: string | null;
+  };
   decision: AnalyzeDecision;
   recommendation: string;
   confidence: AnalyzeConfidence;
@@ -32,6 +41,8 @@ export type AnalyzePayload = {
   motionSummary: {
     dominantSide: "left" | "right" | null;
     trunkLean: number | null;
+    primaryKnee: number | null;
+    primaryHip: number | null;
     leftKnee: number | null;
     rightKnee: number | null;
     leftHip: number | null;
@@ -41,7 +52,8 @@ export type AnalyzePayload = {
     detectedRepCount: number;
     averageRepDurationMs: number | null;
     averageBottomKneeAngle: number | null;
-    primaryMetric: "knee_flexion";
+    averageBottomPrimaryMetricValue: number | null;
+    primaryMetric: ExercisePrimaryMetric;
   };
   reps: Array<{
     repNumber: number;
@@ -50,6 +62,7 @@ export type AnalyzePayload = {
     endMs: number;
     durationMs: number;
     bottomKneeAngle: number | null;
+    bottomPrimaryMetricValue: number | null;
     confidence: "high" | "medium" | "low";
   }>;
   geminiInstructions: string[];
@@ -69,6 +82,14 @@ export type AnalysisScores = {
   fatigueManagement: number | null;
 };
 
+export type AnalysisNerdAnalysis = {
+  summary: string;
+  movementDiagnosis: string[];
+  kinematicEvidence: string[];
+  likelyConstraints: string[];
+  cueRationale: string[];
+};
+
 export type AnalysisDraft = {
   accepted: boolean;
   mode: AnalyzeDecision;
@@ -79,6 +100,7 @@ export type AnalysisDraft = {
     whatYoureDoingWell: string[];
     whatToFix: string[];
   };
+  nerdAnalysis: AnalysisNerdAnalysis;
   scores: AnalysisScores;
   cues: AnalysisCue[];
   risks: string[];
@@ -109,6 +131,7 @@ export type CompactAnalysisInput = {
   targetMuscles: string[];
   sessionIntent: "form_check" | "work_set" | "demo";
   resistanceType: "bodyweight" | "free_weight" | "machine" | "unknown";
+  userNotes: string | null;
   cameraAngle: "sagittal" | "coronal" | "angled" | "unknown";
   clipQuality: {
     confidence: AnalyzeConfidence;
@@ -161,6 +184,7 @@ export type AnalysisHistoryEntry = {
   repCount: number;
   averageRepDurationMs: number | null;
   averageBottomKneeAngle: number | null;
+  averageBottomPrimaryMetricValue: number | null;
   cameraAngle: AnalyzePayload["cameraAngle"]["label"];
   summary: string;
   cues: string[];

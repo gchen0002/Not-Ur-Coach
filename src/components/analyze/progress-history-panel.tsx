@@ -151,12 +151,12 @@ export function ProgressHistoryPanel({ history }: ProgressHistoryPanelProps) {
       <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
         <h3 className="text-sm font-medium text-[var(--ink)]">Movement comparison</h3>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {[
-            { label: "Score vs prev", current: latest?.overallScore ?? null, comparison: previous?.overallScore ?? null, suffix: "" },
-            { label: "Rep duration vs prev", current: latest?.averageRepDurationMs ?? null, comparison: previous?.averageRepDurationMs ?? null, suffix: "ms" },
-            { label: "Bottom knee vs prev", current: latest?.averageBottomKneeAngle ?? null, comparison: previous?.averageBottomKneeAngle ?? null, suffix: "deg" },
-            { label: "Rep count vs prev", current: latest?.repCount ?? null, comparison: previous?.repCount ?? null, suffix: "" },
-          ].map((metric) => (
+            {[
+              { label: "Score vs prev", current: latest?.overallScore ?? null, comparison: previous?.overallScore ?? null, suffix: "" },
+              { label: "Rep duration vs prev", current: latest?.averageRepDurationMs ?? null, comparison: previous?.averageRepDurationMs ?? null, suffix: "ms" },
+              { label: "Bottom metric vs prev", current: latest?.averageBottomPrimaryMetricValue ?? latest?.averageBottomKneeAngle ?? null, comparison: previous?.averageBottomPrimaryMetricValue ?? previous?.averageBottomKneeAngle ?? null, suffix: "deg" },
+              { label: "Rep count vs prev", current: latest?.repCount ?? null, comparison: previous?.repCount ?? null, suffix: "" },
+            ].map((metric) => (
             <div key={metric.label} className="rounded-xl bg-[var(--surface-2)] px-4 py-3.5">
               <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--ink-muted)]">{metric.label}</p>
               <p className="mt-1.5 text-xl font-medium text-[var(--accent)]">
@@ -170,7 +170,7 @@ export function ProgressHistoryPanel({ history }: ProgressHistoryPanelProps) {
         </div>
         {best ? (
           <p className="mt-4 text-xs leading-relaxed text-[var(--ink-muted)]">
-            Best run: {formatMetric(best.overallScore)} overall, {formatMetric(best.averageBottomKneeAngle, "deg")} avg bottom knee, {formatMetric(best.averageRepDurationMs, "ms")} avg rep.
+            Best run: {formatMetric(best.overallScore)} overall, {formatMetric(best.averageBottomPrimaryMetricValue ?? best.averageBottomKneeAngle, "deg")} avg bottom metric, {formatMetric(best.averageRepDurationMs, "ms")} avg rep.
           </p>
         ) : null}
       </div>

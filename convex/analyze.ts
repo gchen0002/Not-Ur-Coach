@@ -100,6 +100,28 @@ function sanitizeGeminiDraft(candidate: unknown, fallback: AnalysisDraft): Analy
         ? draft.basicAnalysis.whatToFix.filter((item): item is string => typeof item === "string").slice(0, 3)
         : fallback.basicAnalysis.whatToFix,
     },
+    nerdAnalysis: {
+      summary:
+        draft.nerdAnalysis && typeof draft.nerdAnalysis === "object" && typeof draft.nerdAnalysis.summary === "string" && draft.nerdAnalysis.summary.trim().length > 0
+          ? draft.nerdAnalysis.summary.trim()
+          : fallback.nerdAnalysis.summary,
+      movementDiagnosis:
+        draft.nerdAnalysis && Array.isArray(draft.nerdAnalysis.movementDiagnosis)
+          ? draft.nerdAnalysis.movementDiagnosis.filter((item): item is string => typeof item === "string").slice(0, 4)
+          : fallback.nerdAnalysis.movementDiagnosis,
+      kinematicEvidence:
+        draft.nerdAnalysis && Array.isArray(draft.nerdAnalysis.kinematicEvidence)
+          ? draft.nerdAnalysis.kinematicEvidence.filter((item): item is string => typeof item === "string").slice(0, 4)
+          : fallback.nerdAnalysis.kinematicEvidence,
+      likelyConstraints:
+        draft.nerdAnalysis && Array.isArray(draft.nerdAnalysis.likelyConstraints)
+          ? draft.nerdAnalysis.likelyConstraints.filter((item): item is string => typeof item === "string").slice(0, 4)
+          : fallback.nerdAnalysis.likelyConstraints,
+      cueRationale:
+        draft.nerdAnalysis && Array.isArray(draft.nerdAnalysis.cueRationale)
+          ? draft.nerdAnalysis.cueRationale.filter((item): item is string => typeof item === "string").slice(0, 4)
+          : fallback.nerdAnalysis.cueRationale,
+    },
     scores: {
       overall: typeof draft.scores.overall === "number" || draft.scores.overall === null ? draft.scores.overall : fallback.scores.overall,
       rom: typeof draft.scores.rom === "number" || draft.scores.rom === null ? draft.scores.rom : fallback.scores.rom,
@@ -213,10 +235,15 @@ function buildCompactAnalysisInput(
   const clipName = payload.clipName?.replace(/\.[a-z0-9]+$/i, "") ?? "Unknown exercise";
 
   return {
-    exercise: context.exercise?.name ?? clipName,
-    targetMuscles: context.exercise?.muscles ?? [],
-    sessionIntent: "form_check",
-    resistanceType: context.exercise?.resistanceType ?? "unknown",
+    exercise: payload.userContext.exerciseName ?? context.exercise?.name ?? clipName,
+    targetMuscles: payload.userContext.targetMuscles.length > 0
+      ? payload.userContext.targetMuscles
+      : context.exercise?.muscles ?? [],
+    sessionIntent: payload.userContext.sessionIntent,
+    resistanceType: payload.userContext.resistanceType !== "unknown"
+      ? payload.userContext.resistanceType
+      : context.exercise?.resistanceType ?? "unknown",
+    userNotes: payload.userContext.notes,
     cameraAngle: payload.cameraAngle.label,
     clipQuality: {
       confidence: payload.confidence,
@@ -300,6 +327,13 @@ async function generateGeminiDraft(
         whatYoureDoingWell: [""],
         whatToFix: [""],
       },
+      nerdAnalysis: {
+        summary: "",
+        movementDiagnosis: [""],
+        kinematicEvidence: [""],
+        likelyConstraints: [""],
+        cueRationale: [""],
+      },
       scores: {
         overall: 0,
         rom: 0,
@@ -371,7 +405,7 @@ export const analyzeClip = actionGeneric({
     const contextRef = makeFunctionReference<"query", { clipName: string | null }, CompactContext>(
       "analysisContext:resolveCompactContext",
     );
-    const context = await ctx.runQuery(contextRef, { clipName: payload.clipName });
+    const context = await ctx.runQuery(contextRef, { clipName: payload.userContext.exerciseName ?? payload.clipName });
     const generated = await generateGeminiDraft(payload, fallbackDraft, context);
 
     return {

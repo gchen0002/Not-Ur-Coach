@@ -1,5 +1,6 @@
 import { getLiveAngles } from "@/lib/angles";
 import type { AnalyzePayload } from "@/lib/analysis-contract";
+import { resolveExerciseMovementProfile, type ExercisePrimaryMetric } from "@/lib/exercise-profile";
 import type { PoseLandmarkPoint } from "@/lib/pose";
 
 type RepFrame = {
@@ -12,6 +13,8 @@ type AngleSample = {
   detectedAt: number;
   value: number;
 };
+
+type RepMetricSample = AngleSample;
 
 function average(values: Array<number | null>) {
   const numericValues = values.filter((value): value is number => value !== null);
@@ -48,42 +51,32 @@ function getRepConfidence(amplitude: number, durationMs: number): "high" | "medi
   return "low";
 }
 
-export function summarizeReps(frames: RepFrame[]): AnalyzePayload["repStats"] & {
-  reps: AnalyzePayload["reps"];
-} {
-  const rawSamples = frames
+function averageVisibleMetric(values: Array<number | null>) {
+  return average(values);
+}
+
+function buildSamples(frames: RepFrame[], primaryMetric: ExercisePrimaryMetric) {
+  return frames
     .map((frame, index) => {
       const liveAngles = getLiveAngles(frame.landmarks);
-      const kneeAngle = average([liveAngles.leftKnee, liveAngles.rightKnee]);
+      const metricValue = primaryMetric === "hip_flexion"
+        ? averageVisibleMetric([liveAngles.primaryHip, liveAngles.leftHip, liveAngles.rightHip])
+        : averageVisibleMetric([liveAngles.primaryKnee, liveAngles.leftKnee, liveAngles.rightKnee]);
 
-      if (kneeAngle === null) {
+      if (metricValue === null) {
         return null;
       }
 
       return {
         index,
         detectedAt: frame.detectedAt,
-        value: kneeAngle,
-      } satisfies AngleSample;
+        value: metricValue,
+      } satisfies RepMetricSample;
     })
-    .filter((sample): sample is AngleSample => sample !== null);
+    .filter((sample): sample is RepMetricSample => sample !== null);
+}
 
-  if (rawSamples.length < 5) {
-    return {
-      detectedRepCount: 0,
-      averageRepDurationMs: null,
-      averageBottomKneeAngle: null,
-      primaryMetric: "knee_flexion",
-      reps: [],
-    };
-  }
-
-  const smoothedValues = smooth(rawSamples.map((sample) => sample.value));
-  const samples = rawSamples.map((sample, index) => ({
-    ...sample,
-    value: smoothedValues[index],
-  }));
-
+function collectValleys(samples: AngleSample[], threshold: number) {
   const valleys: Array<{ sample: AngleSample; position: number }> = [];
   const minimumValleyDistance = 4;
 
@@ -95,12 +88,43 @@ export function summarizeReps(frames: RepFrame[]): AnalyzePayload["repStats"] & 
     if (
       current.value < previous.value &&
       current.value <= next.value &&
-      current.value <= 145 &&
+      current.value <= threshold &&
       (valleys.length === 0 || index - valleys[valleys.length - 1].position >= minimumValleyDistance)
     ) {
       valleys.push({ sample: current, position: index });
     }
   }
+
+  return valleys;
+}
+
+export function summarizeReps(
+  frames: RepFrame[],
+  options?: { exerciseName?: string | null },
+): AnalyzePayload["repStats"] & {
+  reps: AnalyzePayload["reps"];
+} {
+  const exerciseProfile = resolveExerciseMovementProfile(options?.exerciseName);
+  const rawSamples = buildSamples(frames, exerciseProfile.primaryMetric);
+
+  if (rawSamples.length < 5) {
+    return {
+      detectedRepCount: 0,
+      averageRepDurationMs: null,
+      averageBottomKneeAngle: null,
+      averageBottomPrimaryMetricValue: null,
+      primaryMetric: exerciseProfile.primaryMetric,
+      reps: [],
+    };
+  }
+
+  const smoothedValues = smooth(rawSamples.map((sample) => sample.value));
+  const samples = rawSamples.map((sample, index) => ({
+    ...sample,
+    value: smoothedValues[index],
+  }));
+
+  const valleys = collectValleys(samples, exerciseProfile.primaryMetric === "hip_flexion" ? 150 : 145);
 
   const reps: AnalyzePayload["reps"] = [];
 
@@ -131,7 +155,8 @@ export function summarizeReps(frames: RepFrame[]): AnalyzePayload["repStats"] & 
       bottomMs: valley.detectedAt,
       endMs: end.detectedAt,
       durationMs,
-      bottomKneeAngle: round(valley.value),
+      bottomKneeAngle: exerciseProfile.primaryMetric === "knee_flexion" ? round(valley.value) : null,
+      bottomPrimaryMetricValue: round(valley.value),
       confidence: getRepConfidence(amplitude, durationMs),
     });
   }
@@ -140,7 +165,8 @@ export function summarizeReps(frames: RepFrame[]): AnalyzePayload["repStats"] & 
     detectedRepCount: reps.length,
     averageRepDurationMs: round(average(reps.map((rep) => rep.durationMs))),
     averageBottomKneeAngle: round(average(reps.map((rep) => rep.bottomKneeAngle))),
-    primaryMetric: "knee_flexion",
+    averageBottomPrimaryMetricValue: round(average(reps.map((rep) => rep.bottomPrimaryMetricValue))),
+    primaryMetric: exerciseProfile.primaryMetric,
     reps,
   };
 }

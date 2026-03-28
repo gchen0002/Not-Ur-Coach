@@ -1,3 +1,5 @@
+import { resolveExerciseMovementProfile } from "@/lib/exercise-profile";
+
 export type PoseLandmarkPoint = {
   x: number;
   y: number;
@@ -67,6 +69,10 @@ export type PoseWindowQuality = {
   primaryIssues: string[];
 };
 
+export type PoseQualityOptions = {
+  exerciseName?: string | null;
+};
+
 export function getLandmark(
   landmarks: PoseLandmarkPoint[],
   index: number,
@@ -76,14 +82,14 @@ export function getLandmark(
 
 export function isLandmarkVisible(
   landmark: PoseLandmarkPoint | null,
-  minimumVisibility = 0.45,
+  minimumVisibility = 0.35,
 ) {
   return Boolean(landmark && (landmark.visibility ?? 0) >= minimumVisibility);
 }
 
 export function countVisibleLandmarks(
   landmarks: PoseLandmarkPoint[],
-  minimumVisibility = 0.45,
+  minimumVisibility = 0.35,
 ) {
   return landmarks.filter((landmark) => isLandmarkVisible(landmark, minimumVisibility)).length;
 }
@@ -102,13 +108,18 @@ export function distance2d(a: PoseLandmarkPoint, b: PoseLandmarkPoint) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQuality {
+export function evaluateFrameQuality(
+  landmarks: PoseLandmarkPoint[],
+  options?: PoseQualityOptions,
+): PoseFrameQuality {
+  const exerciseProfile = resolveExerciseMovementProfile(options?.exerciseName);
+
   if (landmarks.length === 0) {
     return {
       readiness: "blocked",
       analysisReadiness: "reject",
       analysisReason: "No usable pose detected yet.",
-      guidance: "Start the camera and keep shoulders through feet visible so the live pose pipeline can lock on.",
+      guidance: exerciseProfile.setupGuidance,
       issues: [],
       visibleLandmarks: 0,
       fullBodyVisible: false,
@@ -117,7 +128,7 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
     };
   }
 
-  const visibleLandmarks = countVisibleLandmarks(landmarks, 0.45);
+  const visibleLandmarks = countVisibleLandmarks(landmarks, 0.35);
   const shoulders = [
     getLandmark(landmarks, POSE_LANDMARK_INDEX.leftShoulder),
     getLandmark(landmarks, POSE_LANDMARK_INDEX.rightShoulder),
@@ -135,8 +146,25 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
     getLandmark(landmarks, POSE_LANDMARK_INDEX.rightAnkle),
   ];
 
-  const requiredForTracking = [...shoulders, ...hips].every((landmark) => isLandmarkVisible(landmark));
+  const visibleShoulders = shoulders.filter((landmark) => isLandmarkVisible(landmark)).length;
+  const visibleHips = hips.filter((landmark) => isLandmarkVisible(landmark)).length;
+  const leftSideChainVisible = [
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftShoulder),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftHip),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftKnee),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftAnkle),
+  ].every((landmark) => isLandmarkVisible(landmark));
+  const rightSideChainVisible = [
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightShoulder),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightHip),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightKnee),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightAnkle),
+  ].every((landmark) => isLandmarkVisible(landmark));
   const lowerBodyVisible = [...knees, ...ankles].filter((landmark) => isLandmarkVisible(landmark)).length >= 3;
+  const torsoVisible = visibleShoulders >= 1 && visibleHips >= 1;
+  const requiredForTracking = exerciseProfile.prefersSingleSide
+    ? torsoVisible && (leftSideChainVisible || rightSideChainVisible || lowerBodyVisible)
+    : visibleShoulders === 2 && visibleHips === 2;
   const visiblePoints = landmarks.filter((landmark) => isLandmarkVisible(landmark)).map((landmark) => ({
     x: landmark.x,
     y: landmark.y,
@@ -148,7 +176,9 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
   const centered = visiblePoints.length > 0
     ? visiblePoints.every((point) => point.x >= 0.08 && point.x <= 0.92)
     : false;
-  const fullBodyVisible = requiredForTracking && lowerBodyVisible && !clipped;
+  const fullBodyVisible = exerciseProfile.prefersSingleSide
+    ? requiredForTracking && (leftSideChainVisible || rightSideChainVisible || lowerBodyVisible) && !clipped
+    : requiredForTracking && lowerBodyVisible && !clipped;
   const severeCrop = clipped && !lowerBodyVisible;
   const issues: string[] = [];
 
@@ -160,11 +190,15 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
   }
 
   if (!requiredForTracking) {
-      issues.push("Keep shoulders and hips visible, even if the face is cropped.");
+      issues.push(exerciseProfile.prefersSingleSide
+        ? "Keep one shoulder-to-ankle side chain visible, even if the face is cropped."
+        : "Keep shoulders and hips visible, even if the face is cropped.");
   }
 
   if (!lowerBodyVisible) {
-    issues.push("Step back until knees and ankles stay in frame.");
+    issues.push(exerciseProfile.pattern === "hinge"
+      ? "Step back until one full shoulder-to-ankle side stays visible through the hinge."
+      : "Step back until knees and ankles stay in frame.");
   }
 
   if (clipped) {
@@ -178,7 +212,9 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
   if (visibleLandmarks < 8 || !requiredForTracking || severeCrop) {
     analysisReadiness = "reject";
     analysisReason =
-      "Too much of the torso or lower body is missing for a trustworthy analysis.";
+      exerciseProfile.pattern === "hinge"
+        ? "Too much of the main shoulder-hip-knee-ankle chain is missing for a trustworthy hinge analysis."
+        : "Too much of the torso or lower body is missing for a trustworthy analysis.";
   } else if (!fullBodyVisible || visibleLandmarks < 16 || !centered) {
     analysisReadiness = "best_effort";
     analysisReason =
@@ -190,7 +226,9 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
       readiness: "blocked",
       analysisReadiness,
       analysisReason,
-      guidance: "Move into better light and keep shoulders, hips, and legs visible so the pose tracker can lock on.",
+      guidance: exerciseProfile.prefersSingleSide
+        ? "Move into better light and keep one full shoulder-to-ankle side chain visible so the pose tracker can lock on."
+        : "Move into better light and keep shoulders, hips, and legs visible so the pose tracker can lock on.",
       issues,
       visibleLandmarks,
       fullBodyVisible,
@@ -204,7 +242,9 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
       readiness: "adjusting",
       analysisReadiness,
       analysisReason,
-      guidance: "You are close. Step back slightly and keep shoulders through feet inside the frame.",
+      guidance: exerciseProfile.pattern === "hinge"
+        ? "You are close. Step back slightly and keep the main shoulder-to-ankle side chain visible through the full hinge."
+        : "You are close. Step back slightly and keep shoulders through feet inside the frame.",
       issues,
       visibleLandmarks,
       fullBodyVisible,
@@ -217,7 +257,7 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
     readiness: "ready",
     analysisReadiness,
     analysisReason,
-    guidance: "Frame looks usable for live squat and hinge diagnostics.",
+    guidance: exerciseProfile.setupGuidance,
     issues,
     visibleLandmarks,
     fullBodyVisible,

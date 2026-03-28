@@ -1,9 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  FilesetResolver,
-  PoseLandmarker,
-  type PoseLandmarkerResult,
-} from "@mediapipe/tasks-vision";
 import type { Session } from "@google/genai";
 import { useRouter } from "@tanstack/react-router";
 import { makeFunctionReference } from "convex/server";
@@ -17,6 +12,8 @@ import { TtsPanel } from "@/components/analyze/tts-panel";
 import { appendAnalysisHistory, loadAnalysisHistory } from "@/lib/analysis-history";
 import { buildAnalyzePayload, type BufferedPoseFrame } from "@/lib/analysis-payload";
 import { createAnalysisDraft, createLocalAnalysisRun } from "@/lib/analysis-draft";
+import { SEEDED_EXERCISE_CATALOG } from "@/lib/exercise-catalog";
+import type { ExerciseCatalogEntry } from "@/lib/exercise-intake-contract";
 import type { AnalysisHistoryEntry, AnalysisRunResult, AnalyzePayload } from "@/lib/analysis-contract";
 import type { ChatMessage, ChatReply, ChatRequest } from "@/lib/chat-contract";
 import { createLocalChatReply } from "@/lib/chat-draft";
@@ -33,6 +30,7 @@ import type { TempoTrackRequest, TempoTrackResponse } from "@/lib/tempo-track-co
 import type { TtsRequest, TtsResponse } from "@/lib/tts-contract";
 import { createTempoTrackDraft } from "@/lib/tempo-track-draft";
 import { createLocalTtsResponse } from "@/lib/tts-draft";
+import { resolveExerciseMovementProfile } from "@/lib/exercise-profile";
 import { getLiveAngles } from "@/lib/angles";
 import { detectCameraAngle } from "@/lib/camera-angle";
 import { drawPoseOverlay } from "@/lib/pose-draw";
@@ -41,6 +39,52 @@ import { evaluateFrameQuality, summarizePoseWindow, type PoseLandmarkPoint } fro
 const SAMPLE_INTERVAL_MS = 200;
 const MAX_BUFFERED_FRAMES = 30;
 const MIN_AUTO_ANALYZE_FRAMES = 12;
+const MEDIAPIPE_WASM_BASE = "/mediapipe/wasm";
+const POSE_WORKER_DETECTION_CONFIDENCE = 0.45;
+const POSE_WORKER_PRESENCE_CONFIDENCE = 0.35;
+const POSE_WORKER_TRACKING_CONFIDENCE = 0.35;
+
+type PoseWorkerRequest =
+  | {
+      type: "INIT";
+      requestId: string;
+      payload: {
+        wasmPath: string;
+        modelAssetPath: string;
+        minPoseDetectionConfidence: number;
+        minPosePresenceConfidence: number;
+        minTrackingConfidence: number;
+      };
+    }
+  | {
+      type: "DETECT_FRAME";
+      requestId: string;
+      payload: {
+        image: ImageBitmap;
+        timestampMs: number;
+      };
+    };
+
+type PoseWorkerResponse =
+  | { requestId?: string; status: "ready"; message: string }
+  | {
+      requestId?: string;
+      status: "frame";
+      message: string;
+      landmarks: PoseLandmarkPoint[];
+      visibleLandmarks: number;
+      imageWidth: number;
+      imageHeight: number;
+      detectedAt: number;
+    }
+  | { requestId?: string; status: "error"; message: string };
+
+function createPoseWorker() {
+  return new Worker(new URL("../../workers/pose-worker.ts", import.meta.url), {
+    type: "module",
+    name: "pose-worker-analyze",
+  });
+}
 
 function getSupportedRecordingMimeType() {
   if (typeof MediaRecorder === "undefined") {
@@ -67,16 +111,6 @@ function getRecordingExtension(mimeType: string) {
   }
 
   return "webm";
-}
-
-function normalizeLandmarks(result: PoseLandmarkerResult) {
-  return (result.landmarks[0] ?? []).map((landmark) => ({
-    x: landmark.x,
-    y: landmark.y,
-    z: landmark.z,
-    visibility: landmark.visibility ?? 0,
-    presence: 1,
-  }));
 }
 
 function summarizeError(message: string) {
@@ -132,6 +166,8 @@ function createSeedChatMessage(result: AnalysisRunResult): ChatMessage {
 export function AnalyzePage() {
   const router = useRouter();
   const clipAutoAnalyzePendingRef = useRef(false);
+  const poseWorkerRef = useRef<Worker | null>(null);
+  const poseWorkerRequestIdRef = useRef(0);
   const liveSessionRef = useRef<Session | null>(null);
   const liveAutoSnapshotTimerRef = useRef<number | null>(null);
   const liveSnapshotInFlightRef = useRef(false);
@@ -142,7 +178,6 @@ export function AnalyzePage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const landmarkerRef = useRef<PoseLandmarker | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
   const shouldLoadRecordingRef = useRef(false);
@@ -165,6 +200,12 @@ export function AnalyzePage() {
   const [bufferedFrames, setBufferedFrames] = useState<BufferedPoseFrame[]>([]);
   const [sourceType, setSourceType] = useState<"camera" | "clip" | null>(null);
   const [clipName, setClipName] = useState<string | null>(null);
+  const [exerciseCatalog, setExerciseCatalog] = useState<ExerciseCatalogEntry[]>(SEEDED_EXERCISE_CATALOG);
+  const [clipExerciseName, setClipExerciseName] = useState("");
+  const [clipTargetMuscles, setClipTargetMuscles] = useState("");
+  const [clipResistanceType, setClipResistanceType] = useState<AnalyzePayload["userContext"]["resistanceType"]>("unknown");
+  const [clipSessionIntent, setClipSessionIntent] = useState<AnalyzePayload["userContext"]["sessionIntent"]>("form_check");
+  const [clipNotes, setClipNotes] = useState("");
   const [clipState, setClipState] = useState<"idle" | "loading" | "playing" | "paused" | "ended" | "error">("idle");
   const [recordingState, setRecordingState] = useState<"idle" | "recording" | "processing" | "error">("idle");
   const [recordingDuration, setRecordingDuration] = useState(0);
@@ -202,6 +243,60 @@ export function AnalyzePage() {
   const recordingSupported = typeof MediaRecorder !== "undefined";
   const browserSpeechSupported = typeof window !== "undefined" && "speechSynthesis" in window;
   const convexClient = router.options.context.convexClient;
+  const clipExerciseProfile = useMemo(
+    () => resolveExerciseMovementProfile(clipExerciseName || clipName),
+    [clipExerciseName, clipName],
+  );
+  const clipUserContext = useMemo<AnalyzePayload["userContext"]>(() => ({
+    exerciseName: clipExerciseName.trim() || null,
+    targetMuscles: clipTargetMuscles
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 6),
+    sessionIntent: clipSessionIntent,
+    resistanceType: clipResistanceType,
+    notes: clipNotes.trim() || null,
+  }), [clipExerciseName, clipNotes, clipResistanceType, clipSessionIntent, clipTargetMuscles]);
+  const analyzeExerciseName = clipUserContext.exerciseName ?? clipName;
+
+  async function callPoseWorker(message: PoseWorkerRequest, transferables: Transferable[] = []) {
+    const worker = poseWorkerRef.current;
+
+    if (!worker) {
+      throw new Error("Pose worker is not ready yet.");
+    }
+
+    return await new Promise<PoseWorkerResponse>((resolve, reject) => {
+      const handleMessage = (event: MessageEvent<PoseWorkerResponse>) => {
+        if (event.data.requestId !== message.requestId) {
+          return;
+        }
+
+        cleanup();
+        resolve(event.data);
+      };
+
+      const handleError = (event: ErrorEvent) => {
+        cleanup();
+        reject(new Error(event.message || "Pose worker failed."));
+      };
+
+      const cleanup = () => {
+        worker.removeEventListener("message", handleMessage as EventListener);
+        worker.removeEventListener("error", handleError as EventListener);
+      };
+
+      worker.addEventListener("message", handleMessage as EventListener);
+      worker.addEventListener("error", handleError as EventListener);
+      worker.postMessage(message, transferables);
+    });
+  }
+
+  function createPoseWorkerRequestId() {
+    poseWorkerRequestIdRef.current += 1;
+    return `pose-worker-${poseWorkerRequestIdRef.current}`;
+  }
 
   useEffect(() => {
     setAnalysisHistory(loadAnalysisHistory());
@@ -210,26 +305,34 @@ export function AnalyzePage() {
   useEffect(() => {
     let cancelled = false;
 
-    async function initLandmarker() {
+    async function initPoseWorker() {
       try {
-        const vision = await FilesetResolver.forVisionTasks("/mediapipe/wasm");
-        const landmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: {
+        const worker = createPoseWorker();
+        poseWorkerRef.current = worker;
+        const response = await callPoseWorker({
+          type: "INIT",
+          requestId: createPoseWorkerRequestId(),
+          payload: {
+            wasmPath: MEDIAPIPE_WASM_BASE,
             modelAssetPath: "/mediapipe/pose_landmarker_full.task",
+            minPoseDetectionConfidence: POSE_WORKER_DETECTION_CONFIDENCE,
+            minPosePresenceConfidence: POSE_WORKER_PRESENCE_CONFIDENCE,
+            minTrackingConfidence: POSE_WORKER_TRACKING_CONFIDENCE,
           },
-          runningMode: "VIDEO",
-          numPoses: 1,
         });
 
         if (cancelled) {
-          landmarker.close();
+          worker.terminate();
           return;
         }
 
-        landmarkerRef.current = landmarker;
+        if (response.status === "error") {
+          throw new Error(response.message);
+        }
+
         setPipelineState("ready");
         setPipelineError(null);
-        setStatusMessage("Pose pipeline ready. Start the camera or load a training clip.");
+        setStatusMessage("Pose pipeline ready in the worker. Start the camera or load a training clip.");
       } catch (error) {
         const message = summarizeError(
           error instanceof Error ? error.message : "Failed to initialize MediaPipe Pose Landmarker.",
@@ -240,7 +343,7 @@ export function AnalyzePage() {
       }
     }
 
-    void initLandmarker();
+    void initPoseWorker();
 
     return () => {
       cancelled = true;
@@ -275,10 +378,61 @@ export function AnalyzePage() {
       }
       liveSessionRef.current?.close();
       liveSessionRef.current = null;
-      landmarkerRef.current?.close();
-      landmarkerRef.current = null;
+      poseWorkerRef.current?.terminate();
+      poseWorkerRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    async function loadExerciseCatalog() {
+      if (!convexClient) {
+        return;
+      }
+
+      try {
+        const listRef = makeFunctionReference<"query", Record<string, never>, ExerciseCatalogEntry[]>(
+          "exercises:listCatalog",
+        );
+        setExerciseCatalog(await convexClient.query(listRef, {}));
+      } catch {
+        setExerciseCatalog(SEEDED_EXERCISE_CATALOG);
+      }
+    }
+
+    void loadExerciseCatalog();
+  }, [convexClient]);
+
+  function findCatalogExercise(name: string) {
+    const normalized = name.trim().toLowerCase();
+
+    if (!normalized) {
+      return null;
+    }
+
+    return exerciseCatalog.find((exercise) => {
+      const haystack = `${exercise.name} ${exercise.muscles.join(" ")}`.toLowerCase();
+      return haystack.includes(normalized) || normalized.includes(exercise.name.toLowerCase());
+    }) ?? null;
+  }
+
+  function applyExerciseCatalogSelection(name: string) {
+    setClipExerciseName(name);
+    const match = findCatalogExercise(name);
+
+    if (!match) {
+      return;
+    }
+
+    setClipTargetMuscles(match.muscles.join(", "));
+    const equipmentNames = match.equipment.join(" ").toLowerCase();
+    setClipResistanceType(
+      equipmentNames.includes("machine") || equipmentNames.includes("cable")
+        ? "machine"
+        : equipmentNames.includes("bodyweight")
+          ? "bodyweight"
+          : "free_weight",
+    );
+  }
 
   useEffect(() => {
     async function loadLiveSessions() {
@@ -301,23 +455,29 @@ export function AnalyzePage() {
 
   const liveAngles = useMemo(() => getLiveAngles(lastLandmarks), [lastLandmarks]);
   const cameraAngle = useMemo(() => detectCameraAngle(lastLandmarks), [lastLandmarks]);
-  const frameQuality = useMemo(() => evaluateFrameQuality(lastLandmarks), [lastLandmarks]);
+  const frameQuality = useMemo(
+    () => evaluateFrameQuality(lastLandmarks, { exerciseName: analyzeExerciseName }),
+    [analyzeExerciseName, lastLandmarks],
+  );
   const windowQuality = useMemo(
-    () => summarizePoseWindow(bufferedFrames.map((frame) => evaluateFrameQuality(frame.landmarks))),
-    [bufferedFrames],
+    () => summarizePoseWindow(
+      bufferedFrames.map((frame) => evaluateFrameQuality(frame.landmarks, { exerciseName: analyzeExerciseName })),
+    ),
+    [analyzeExerciseName, bufferedFrames],
   );
   const analyzePayload = useMemo(
     () =>
       buildAnalyzePayload({
         sourceType,
         clipName,
+        userContext: clipUserContext,
         bufferedFrames,
         frameQuality,
         windowQuality,
         cameraAngle,
         liveAngles,
       }),
-    [bufferedFrames, cameraAngle, clipName, frameQuality, liveAngles, sourceType, windowQuality],
+    [bufferedFrames, cameraAngle, clipName, clipUserContext, frameQuality, liveAngles, sourceType, windowQuality],
   );
   const analysisDraft = useMemo(() => createAnalysisDraft(analyzePayload), [analyzePayload]);
   const analysisPreview = useMemo(
@@ -628,6 +788,13 @@ export function AnalyzePage() {
       setCameraState("idle");
       setSourceType("clip");
       setClipName(file.name);
+      if (!clipExerciseName.trim()) {
+        const inferredName = file.name.replace(/\.[a-z0-9]+$/i, "");
+        const inferredExercise = findCatalogExercise(inferredName);
+        if (inferredExercise) {
+          applyExerciseCatalogSelection(inferredExercise.name);
+        }
+      }
       setClipState("loading");
       setRecordingState("idle");
       setPipelineError(null);
@@ -1395,9 +1562,9 @@ export function AnalyzePage() {
 
   async function captureFrame() {
     const video = videoRef.current;
-    const landmarker = landmarkerRef.current;
+    const worker = poseWorkerRef.current;
 
-    if (processingRef.current || !video || !landmarker || pipelineState !== "ready") {
+    if (processingRef.current || !video || !worker || pipelineState !== "ready") {
       return;
     }
 
@@ -1408,9 +1575,26 @@ export function AnalyzePage() {
     processingRef.current = true;
 
     try {
-      const result = landmarker.detectForVideo(video, performance.now());
-      const landmarks = normalizeLandmarks(result);
-      const nextVisibleLandmarks = landmarks.filter((landmark) => landmark.visibility >= 0.45).length;
+      const image = await createImageBitmap(video);
+      const response = await callPoseWorker({
+        type: "DETECT_FRAME",
+        requestId: createPoseWorkerRequestId(),
+        payload: {
+          image,
+          timestampMs: performance.now(),
+        },
+      }, [image]);
+
+      if (response.status === "error") {
+        throw new Error(response.message);
+      }
+
+      if (response.status !== "frame") {
+        throw new Error("Pose worker returned an unexpected frame response.");
+      }
+
+      const landmarks = response.landmarks;
+      const nextVisibleLandmarks = response.visibleLandmarks;
 
       setLastLandmarks(landmarks);
       setVisibleLandmarks(nextVisibleLandmarks);
@@ -1572,6 +1756,102 @@ export function AnalyzePage() {
       {/* ─── Status message ─── */}
       <p className="text-sm leading-relaxed text-[var(--ink-secondary)]">{statusMessage}</p>
 
+      {sourceType === "clip" ? (
+        <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-medium text-[var(--ink)]">Uploaded clip context</h3>
+              <p className="mt-1 text-sm text-[var(--ink-muted)]">
+                Add exercise details here so the analysis does not have to infer everything from the filename or clip alone.
+              </p>
+            </div>
+            <div className="rounded-full bg-[var(--surface-2)] px-3 py-1 text-xs font-medium text-[var(--ink-muted)]">
+              {clipExerciseProfile.pattern} focus
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <label className="space-y-2 text-sm text-[var(--ink-secondary)]">
+              <span className="font-medium text-[var(--ink)]">Exercise</span>
+              <input
+                list="analyze-exercise-options"
+                value={clipExerciseName}
+                onChange={(event) => setClipExerciseName(event.target.value)}
+                placeholder="SLDL, squat, RDL..."
+                className="w-full rounded-2xl border border-[var(--outline)] bg-white px-4 py-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+              />
+              <datalist id="analyze-exercise-options">
+                {exerciseCatalog.map((exercise) => (
+                  <option key={exercise.name} value={exercise.name} />
+                ))}
+              </datalist>
+              {exerciseCatalog.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {exerciseCatalog.slice(0, 8).map((exercise) => (
+                    <button
+                      key={exercise.name}
+                      type="button"
+                      onClick={() => applyExerciseCatalogSelection(exercise.name)}
+                      className="rounded-full border border-[var(--outline)] bg-[var(--surface-2)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                    >
+                      {exercise.name}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </label>
+
+            <label className="space-y-2 text-sm text-[var(--ink-secondary)]">
+              <span className="font-medium text-[var(--ink)]">Target muscles</span>
+              <input
+                value={clipTargetMuscles}
+                onChange={(event) => setClipTargetMuscles(event.target.value)}
+                placeholder="Hamstrings, erectors"
+                className="w-full rounded-2xl border border-[var(--outline)] bg-white px-4 py-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+              />
+            </label>
+
+            <label className="space-y-2 text-sm text-[var(--ink-secondary)]">
+              <span className="font-medium text-[var(--ink)]">Resistance type</span>
+              <select
+                value={clipResistanceType}
+                onChange={(event) => setClipResistanceType(event.target.value as AnalyzePayload["userContext"]["resistanceType"])}
+                className="w-full rounded-2xl border border-[var(--outline)] bg-white px-4 py-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+              >
+                <option value="unknown">Unknown</option>
+                <option value="bodyweight">Bodyweight</option>
+                <option value="free_weight">Free weight</option>
+                <option value="machine">Machine / cable</option>
+              </select>
+            </label>
+
+            <label className="space-y-2 text-sm text-[var(--ink-secondary)]">
+              <span className="font-medium text-[var(--ink)]">Session intent</span>
+              <select
+                value={clipSessionIntent}
+                onChange={(event) => setClipSessionIntent(event.target.value as AnalyzePayload["userContext"]["sessionIntent"])}
+                className="w-full rounded-2xl border border-[var(--outline)] bg-white px-4 py-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+              >
+                <option value="form_check">Form check</option>
+                <option value="work_set">Work set</option>
+                <option value="demo">Demo / showcase</option>
+              </select>
+            </label>
+
+            <label className="space-y-2 text-sm text-[var(--ink-secondary)] lg:col-span-2">
+              <span className="font-medium text-[var(--ink)]">Clip notes</span>
+              <textarea
+                value={clipNotes}
+                onChange={(event) => setClipNotes(event.target.value)}
+                rows={3}
+                placeholder="Example: barbell SLDL, goal is hamstrings + erectors, plates partially block the shins in the bottom third."
+                className="w-full rounded-2xl border border-[var(--outline)] bg-white px-4 py-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+              />
+            </label>
+          </div>
+        </div>
+      ) : null}
+
       {/* ─── Demo guide ─── */}
       {showDemoGuide ? (
         <div className="rounded-[28px] bg-[#f0f4ff] p-6 ring-1 ring-[var(--outline)]">
@@ -1702,6 +1982,8 @@ export function AnalyzePage() {
                 width: {cameraAngle.widthRatio ?? "-"} | depth: {cameraAngle.depthRatio ?? "-"}
               </p>
               {clipName ? <p className="mt-1 text-xs text-[var(--ink-muted)]">clip: {clipName}</p> : null}
+              {clipUserContext.exerciseName ? <p className="mt-1 text-xs text-[var(--ink-muted)]">exercise: {clipUserContext.exerciseName}</p> : null}
+              {clipUserContext.targetMuscles.length > 0 ? <p className="mt-1 text-xs text-[var(--ink-muted)]">targets: {clipUserContext.targetMuscles.join(", ")}</p> : null}
               {recordedClipName ? <p className="mt-1 text-xs text-[var(--ink-muted)]">last rec: {recordedClipName}</p> : null}
             </div>
             {recordingError ? (
@@ -1785,6 +2067,7 @@ export function AnalyzePage() {
               ["Detected reps", String(analyzePayload.repStats.detectedRepCount)],
               ["Avg rep duration", analyzePayload.repStats.averageRepDurationMs === null ? "--" : `${analyzePayload.repStats.averageRepDurationMs}ms`],
               ["Avg bottom knee", analyzePayload.repStats.averageBottomKneeAngle === null ? "--" : `${analyzePayload.repStats.averageBottomKneeAngle}deg`],
+              ["Avg primary metric", analyzePayload.repStats.averageBottomPrimaryMetricValue === null ? "--" : `${analyzePayload.repStats.averageBottomPrimaryMetricValue}deg`],
               ["Primary metric", analyzePayload.repStats.primaryMetric],
             ].map(([label, value]) => (
               <div key={label} className="flex items-center justify-between rounded-xl bg-[var(--surface-2)] px-3.5 py-2.5 text-sm">
@@ -1799,7 +2082,7 @@ export function AnalyzePage() {
                   {analyzePayload.reps.map((rep) => (
                     <li key={rep.repNumber} className="flex items-start gap-2">
                       <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent)]" />
-                      {`Rep ${rep.repNumber}: ${rep.durationMs}ms, bottom ${rep.bottomKneeAngle ?? "--"}deg, ${rep.confidence}`}
+                      {`Rep ${rep.repNumber}: ${rep.durationMs}ms, bottom ${rep.bottomPrimaryMetricValue ?? rep.bottomKneeAngle ?? "--"}deg, ${rep.confidence}`}
                     </li>
                   ))}
                 </ul>

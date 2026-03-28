@@ -7,9 +7,11 @@ type SpikeResult =
   | { status: "success"; message: string; landmarks: number }
   | { status: "error"; message: string };
 
+const MEDIAPIPE_WASM_BASE = "/mediapipe/wasm";
+
 function createPoseWorker() {
   return new Worker(new URL("../../workers/pose-worker.ts", import.meta.url), {
-    type: "classic",
+    type: "module",
     name: "pose-worker",
   });
 }
@@ -52,7 +54,7 @@ export function DayZeroPage() {
     worker.postMessage({
       type: "RUN_SPIKE",
       payload: {
-        wasmPath: "/mediapipe/wasm",
+        wasmPath: MEDIAPIPE_WASM_BASE,
         image: imageBitmap,
       },
     }, [imageBitmap]);
