@@ -12,6 +12,7 @@ import { TtsPanel } from "@/components/analyze/tts-panel";
 import { appendAnalysisHistory, loadAnalysisHistory } from "@/lib/analysis-history";
 import { buildAnalyzePayload, type BufferedPoseFrame } from "@/lib/analysis-payload";
 import { createAnalysisDraft, createLocalAnalysisRun } from "@/lib/analysis-draft";
+import type { ClipContextInferenceRequest, ClipContextInferenceResult } from "@/lib/clip-context-contract";
 import { SEEDED_EXERCISE_CATALOG } from "@/lib/exercise-catalog";
 import type { ExerciseCatalogEntry } from "@/lib/exercise-intake-contract";
 import type { AnalysisHistoryEntry, AnalysisRunResult, AnalyzePayload } from "@/lib/analysis-contract";
@@ -166,6 +167,7 @@ function createSeedChatMessage(result: AnalysisRunResult): ChatMessage {
 export function AnalyzePage() {
   const router = useRouter();
   const clipAutoAnalyzePendingRef = useRef(false);
+  const clipContextRequestIdRef = useRef(0);
   const poseWorkerRef = useRef<Worker | null>(null);
   const poseWorkerRequestIdRef = useRef(0);
   const liveSessionRef = useRef<Session | null>(null);
@@ -207,6 +209,10 @@ export function AnalyzePage() {
   const [clipSessionIntent, setClipSessionIntent] = useState<AnalyzePayload["userContext"]["sessionIntent"]>("form_check");
   const [clipNotes, setClipNotes] = useState("");
   const [clipState, setClipState] = useState<"idle" | "loading" | "playing" | "paused" | "ended" | "error">("idle");
+  const [clipContextState, setClipContextState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [clipContextProvider, setClipContextProvider] = useState<"gemini" | "heuristic" | null>(null);
+  const [clipContextConfidence, setClipContextConfidence] = useState<"high" | "medium" | "low" | null>(null);
+  const [clipContextError, setClipContextError] = useState<string | null>(null);
   const [recordingState, setRecordingState] = useState<"idle" | "recording" | "processing" | "error">("idle");
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [recordingError, setRecordingError] = useState<string | null>(null);
@@ -544,6 +550,7 @@ export function AnalyzePage() {
   }, [cameraAngle.label, cameraState, frameQuality.analysisReadiness, frameQuality.guidance, frameQuality.readiness, lastLandmarks.length, pipelineError, pipelineState, sourceType]);
 
   function resetPoseState() {
+    clipContextRequestIdRef.current += 1;
     clipAutoAnalyzePendingRef.current = false;
     processingRef.current = false;
     liveMicRecorderRef.current?.stop();
@@ -564,6 +571,10 @@ export function AnalyzePage() {
     setAnalysisState("idle");
     setAnalysisError(null);
     setAnalysisResult(null);
+    setClipContextState("idle");
+    setClipContextProvider(null);
+    setClipContextConfidence(null);
+    setClipContextError(null);
     setChatMessages([]);
     setChatState("idle");
     setChatError(null);
@@ -622,6 +633,171 @@ export function AnalyzePage() {
     });
 
     return { dataUrl, blob };
+  }
+
+  function captureVideoFrameDataUrl(video: HTMLVideoElement) {
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      throw new Error("Failed to prepare a video frame for clip context inference.");
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  }
+
+  function waitForVideoSeek(video: HTMLVideoElement, targetTime: number) {
+    if (Math.abs(video.currentTime - targetTime) < 0.05) {
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out seeking video for clip context inference."));
+      }, 1200);
+
+      const handleSeeked = () => {
+        cleanup();
+        resolve();
+      };
+
+      const handleError = () => {
+        cleanup();
+        reject(new Error("Failed to seek video for clip context inference."));
+      };
+
+      const cleanup = () => {
+        window.clearTimeout(timeoutId);
+        video.removeEventListener("seeked", handleSeeked);
+        video.removeEventListener("error", handleError);
+      };
+
+      video.addEventListener("seeked", handleSeeked, { once: true });
+      video.addEventListener("error", handleError, { once: true });
+      video.currentTime = targetTime;
+    });
+  }
+
+  async function captureClipInferenceFrames() {
+    const video = videoRef.current;
+
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) {
+      return [] as string[];
+    }
+
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const originalTime = duration > 0 ? Math.max(0, Math.min(video.currentTime, duration)) : 0;
+    const wasPaused = video.paused;
+    const targetTimes = duration > 1
+      ? [0.12, 0.4, 0.72].map((ratio) => Math.max(0, Math.min(duration * ratio, Math.max(0, duration - 0.05))))
+      : [originalTime];
+    const uniqueTimes = targetTimes.filter((time, index, values) => values.findIndex((candidate) => Math.abs(candidate - time) < 0.1) === index);
+    const frames: string[] = [captureVideoFrameDataUrl(video)];
+
+    video.pause();
+
+    try {
+      for (const targetTime of uniqueTimes) {
+        await waitForVideoSeek(video, targetTime);
+        const frame = captureVideoFrameDataUrl(video);
+
+        if (!frames.includes(frame)) {
+          frames.push(frame);
+        }
+      }
+
+      await waitForVideoSeek(video, originalTime);
+    } catch {
+      // Keep the current-frame fallback captured above.
+    } finally {
+      if (!wasPaused) {
+        await video.play().catch(() => undefined);
+      }
+    }
+
+    return frames;
+  }
+
+  async function inferUploadedClipContext(fileName: string) {
+    const requestId = ++clipContextRequestIdRef.current;
+    const hintExerciseName = clipExerciseName.trim();
+    const hintTargetMuscles = clipTargetMuscles.trim();
+    const hintResistanceType = clipResistanceType;
+    const hintSessionIntent = clipSessionIntent;
+
+    setClipContextState("loading");
+    setClipContextProvider(null);
+    setClipContextConfidence(null);
+    setClipContextError(null);
+
+    try {
+      const frameDataUrls = await captureClipInferenceFrames();
+
+      if (requestId !== clipContextRequestIdRef.current) {
+        return;
+      }
+
+      if (!convexClient) {
+        const inferredExercise = findCatalogExercise(fileName.replace(/\.[a-z0-9]+$/i, ""));
+
+        if (!hintExerciseName && inferredExercise) {
+          applyExerciseCatalogSelection(inferredExercise.name);
+        }
+
+        setClipContextState("ready");
+        setClipContextProvider("heuristic");
+        setClipContextConfidence(inferredExercise ? "medium" : "low");
+        return;
+      }
+
+      const inferRef = makeFunctionReference<"action", { request: ClipContextInferenceRequest }, ClipContextInferenceResult>(
+        "liveCoachContext:inferClipUploadContext",
+      );
+      const result = await convexClient.action(inferRef, {
+        request: {
+          fileName,
+          frameDataUrls,
+        },
+      });
+
+      if (requestId !== clipContextRequestIdRef.current) {
+        return;
+      }
+
+      if (!hintExerciseName && result.inferredExercise) {
+        applyExerciseCatalogSelection(result.inferredExercise);
+      }
+
+      if (!hintTargetMuscles && result.targetMuscles.length > 0) {
+        setClipTargetMuscles(result.targetMuscles.join(", "));
+      }
+
+      if (hintResistanceType === "unknown" && result.resistanceType !== "unknown") {
+        setClipResistanceType(result.resistanceType);
+      }
+
+      if (hintSessionIntent === "form_check" && result.sessionIntent !== "form_check") {
+        setClipSessionIntent(result.sessionIntent);
+      }
+
+      setClipContextState(result.error ? "error" : "ready");
+      setClipContextProvider(result.provider);
+      setClipContextConfidence(result.confidence);
+      setClipContextError(result.error);
+    } catch (error) {
+      if (requestId !== clipContextRequestIdRef.current) {
+        return;
+      }
+
+      setClipContextState("error");
+      setClipContextProvider(null);
+      setClipContextConfidence(null);
+      setClipContextError(error instanceof Error ? error.message : "Failed to infer uploaded clip context.");
+    }
   }
 
   function buildLiveSnapshotPacket() {
@@ -813,6 +989,7 @@ export function AnalyzePage() {
       videoRef.current.playsInline = true;
       await waitForVideoReadiness(videoRef.current, file.name);
       await videoRef.current.play();
+      void inferUploadedClipContext(file.name);
       clipAutoAnalyzePendingRef.current = true;
 
       setClipState("playing");
@@ -1764,6 +1941,22 @@ export function AnalyzePage() {
               <p className="mt-1 text-sm text-[var(--ink-muted)]">
                 Add exercise details here so the analysis does not have to infer everything from the filename or clip alone.
               </p>
+              {clipContextState === "loading" ? (
+                <p className="mt-2 text-xs font-medium text-[var(--accent)]">
+                  Inferring exercise context from the uploaded clip with Gemini...
+                </p>
+              ) : null}
+              {clipContextState === "ready" && clipContextProvider ? (
+                <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                  Auto-filled with {clipContextProvider === "gemini" ? "Gemini clip inference" : "filename heuristics"}
+                  {clipContextConfidence ? ` (${clipContextConfidence} confidence)` : ""}.
+                </p>
+              ) : null}
+              {clipContextError ? (
+                <p className="mt-2 text-xs text-amber-700">
+                  Clip inference fallback: {clipContextError}
+                </p>
+              ) : null}
             </div>
             <div className="rounded-full bg-[var(--surface-2)] px-3 py-1 text-xs font-medium text-[var(--ink-muted)]">
               {clipExerciseProfile.pattern} focus
