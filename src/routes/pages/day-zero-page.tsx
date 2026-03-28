@@ -1,12 +1,18 @@
 import { useRef, useState } from "react";
 import { SurfaceCard } from "@/components/ui/surface-card";
-import PoseWorker from "@/workers/pose-worker?worker";
 
 type SpikeResult =
   | { status: "idle"; message: string }
   | { status: "running"; message: string }
   | { status: "success"; message: string; landmarks: number }
   | { status: "error"; message: string };
+
+function createPoseWorker() {
+  return new Worker(new URL("../../workers/pose-worker.ts", import.meta.url), {
+    type: "classic",
+    name: "pose-worker",
+  });
+}
 
 export function DayZeroPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -28,7 +34,7 @@ export function DayZeroPage() {
     setResult({ status: "running", message: "Booting worker and loading MediaPipe assets..." });
     const imageBitmap = await createImageBitmap(file);
 
-    const worker = new PoseWorker();
+    const worker = createPoseWorker();
 
     worker.onmessage = (event: MessageEvent<SpikeResult>) => {
       setResult(event.data);

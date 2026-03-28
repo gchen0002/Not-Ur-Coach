@@ -47,12 +47,24 @@ export const POSE_CONNECTIONS: Array<[number, number]> = [
 
 export type PoseFrameQuality = {
   readiness: "ready" | "adjusting" | "blocked";
+  analysisReadiness: "full" | "best_effort" | "reject";
+  analysisReason: string;
   guidance: string;
   issues: string[];
   visibleLandmarks: number;
   fullBodyVisible: boolean;
   centered: boolean;
   clipped: boolean;
+};
+
+export type PoseWindowQuality = {
+  analysisReadiness: "full" | "best_effort" | "reject";
+  recommendation: string;
+  sampledFrames: number;
+  fullFrames: number;
+  bestEffortFrames: number;
+  rejectedFrames: number;
+  primaryIssues: string[];
 };
 
 export function getLandmark(
@@ -94,6 +106,8 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
   if (landmarks.length === 0) {
     return {
       readiness: "blocked",
+      analysisReadiness: "reject",
+      analysisReason: "No usable pose detected yet.",
       guidance: "Start the camera and step into frame so the live pose pipeline can lock on.",
       issues: [],
       visibleLandmarks: 0,
@@ -135,7 +149,11 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
     ? visiblePoints.every((point) => point.x >= 0.08 && point.x <= 0.92)
     : false;
   const fullBodyVisible = requiredForTracking && lowerBodyVisible && !clipped;
+  const severeCrop = clipped && !lowerBodyVisible;
   const issues: string[] = [];
+
+  let analysisReadiness: PoseFrameQuality["analysisReadiness"] = "full";
+  let analysisReason = "Enough body visibility for standard scoring and Gemini analysis.";
 
   if (visibleLandmarks < 10) {
     issues.push("Need a clearer pose lock.");
@@ -157,9 +175,21 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
     issues.push("Center your body in the preview.");
   }
 
+  if (visibleLandmarks < 8 || !requiredForTracking || severeCrop) {
+    analysisReadiness = "reject";
+    analysisReason =
+      "Too much of the torso or lower body is missing for a trustworthy analysis.";
+  } else if (!fullBodyVisible || visibleLandmarks < 16 || !centered) {
+    analysisReadiness = "best_effort";
+    analysisReason =
+      "Usable for a best-effort Gemini read, but expect lower confidence because the clip is cropped or partially occluded.";
+  }
+
   if (!requiredForTracking || visibleLandmarks < 10) {
     return {
       readiness: "blocked",
+      analysisReadiness,
+      analysisReason,
       guidance: "Move into better light and keep your torso fully visible so the pose tracker can lock on.",
       issues,
       visibleLandmarks,
@@ -172,6 +202,8 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
   if (!fullBodyVisible) {
     return {
       readiness: "adjusting",
+      analysisReadiness,
+      analysisReason,
       guidance: "You are close. Step back slightly and keep your whole lower body inside the frame.",
       issues,
       visibleLandmarks,
@@ -183,11 +215,77 @@ export function evaluateFrameQuality(landmarks: PoseLandmarkPoint[]): PoseFrameQ
 
   return {
     readiness: "ready",
+    analysisReadiness,
+    analysisReason,
     guidance: "Frame looks usable for live squat and hinge diagnostics.",
     issues,
     visibleLandmarks,
     fullBodyVisible,
     centered,
     clipped,
+  };
+}
+
+export function summarizePoseWindow(qualities: PoseFrameQuality[]): PoseWindowQuality {
+  if (qualities.length === 0) {
+    return {
+      analysisReadiness: "reject",
+      recommendation: "Collect a few usable frames before deciding whether this clip should go to Gemini.",
+      sampledFrames: 0,
+      fullFrames: 0,
+      bestEffortFrames: 0,
+      rejectedFrames: 0,
+      primaryIssues: [],
+    };
+  }
+
+  const fullFrames = qualities.filter((quality) => quality.analysisReadiness === "full").length;
+  const bestEffortFrames = qualities.filter((quality) => quality.analysisReadiness === "best_effort").length;
+  const rejectedFrames = qualities.length - fullFrames - bestEffortFrames;
+
+  const issueCounts = new Map<string, number>();
+  for (const quality of qualities) {
+    for (const issue of quality.issues) {
+      issueCounts.set(issue, (issueCounts.get(issue) ?? 0) + 1);
+    }
+  }
+
+  const primaryIssues = [...issueCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([issue]) => issue);
+
+  if (fullFrames >= Math.max(3, Math.ceil(qualities.length * 0.45))) {
+    return {
+      analysisReadiness: "full",
+      recommendation: "Good enough for standard scoring. Most recent frames have enough body visibility for normal analysis.",
+      sampledFrames: qualities.length,
+      fullFrames,
+      bestEffortFrames,
+      rejectedFrames,
+      primaryIssues,
+    };
+  }
+
+  if (fullFrames + bestEffortFrames >= Math.max(3, Math.ceil(qualities.length * 0.55))) {
+    return {
+      analysisReadiness: "best_effort",
+      recommendation: "Run Gemini in best-effort mode. Enough frames are usable, but the analysis should carry lower confidence and crop warnings.",
+      sampledFrames: qualities.length,
+      fullFrames,
+      bestEffortFrames,
+      rejectedFrames,
+      primaryIssues,
+    };
+  }
+
+  return {
+    analysisReadiness: "reject",
+    recommendation: "Reject this clip for analysis. Too many frames are cropped or missing critical joints to trust the output.",
+    sampledFrames: qualities.length,
+    fullFrames,
+    bestEffortFrames,
+    rejectedFrames,
+    primaryIssues,
   };
 }

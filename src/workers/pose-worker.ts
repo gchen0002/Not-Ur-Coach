@@ -6,6 +6,16 @@ import {
 } from "@mediapipe/tasks-vision";
 import type { PoseLandmarkPoint } from "../lib/pose";
 
+type WorkerGlobalWithImport = DedicatedWorkerGlobalScope & {
+  import?: (url: string) => Promise<unknown>;
+};
+
+const workerGlobal = self as WorkerGlobalWithImport;
+
+if (typeof workerGlobal.import !== "function") {
+  workerGlobal.import = (url: string) => import(/* @vite-ignore */ url);
+}
+
 type SpikeMessage = {
   type: "RUN_SPIKE";
   payload: {
@@ -53,7 +63,7 @@ let landmarkerPromise: Promise<PoseLandmarker> | null = null;
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) {
-    return error.stack ? `${error.message}\n${error.stack}` : error.message;
+    return error.message;
   }
 
   return "Unknown MediaPipe worker error";
