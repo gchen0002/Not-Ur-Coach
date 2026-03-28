@@ -4,6 +4,7 @@ import {
   PoseLandmarker,
   type PoseLandmarkerResult,
 } from "@mediapipe/tasks-vision";
+import type { PoseLandmarkPoint } from "../lib/pose";
 
 type SpikeMessage = {
   type: "RUN_SPIKE";
@@ -37,7 +38,15 @@ type SpikeResponse =
 type WorkerResponse =
   | SpikeResponse
   | { status: "ready"; message: string }
-  | { status: "frame"; message: string; landmarks: number }
+  | {
+      status: "frame";
+      message: string;
+      landmarks: PoseLandmarkPoint[];
+      visibleLandmarks: number;
+      imageWidth: number;
+      imageHeight: number;
+      detectedAt: number;
+    }
   | { status: "error"; message: string };
 
 let landmarkerPromise: Promise<PoseLandmarker> | null = null;
@@ -48,6 +57,16 @@ function getErrorMessage(error: unknown) {
   }
 
   return "Unknown MediaPipe worker error";
+}
+
+function normalizeLandmarks(result: PoseLandmarkerResult) {
+  return (result.landmarks[0] ?? []).map((landmark) => ({
+    x: landmark.x,
+    y: landmark.y,
+    z: landmark.z,
+    visibility: landmark.visibility ?? 0,
+    presence: 1,
+  }));
 }
 
 async function getLandmarker(
@@ -152,12 +171,20 @@ async function detectFrame(image: ImageBitmap): Promise<WorkerResponse> {
 
     context.drawImage(image, 0, 0);
     const result = landmarker.detect(canvas);
+    const landmarks = normalizeLandmarks(result);
+    const visibleLandmarks = landmarks.filter((landmark) => landmark.visibility >= 0.45).length;
+    const imageWidth = image.width;
+    const imageHeight = image.height;
     image.close();
 
     return {
       status: "frame",
       message: "Frame processed.",
-      landmarks: result.landmarks[0]?.length ?? 0,
+      landmarks,
+      visibleLandmarks,
+      imageWidth,
+      imageHeight,
+      detectedAt: Date.now(),
     };
   } catch (error) {
     const message = getErrorMessage(error);

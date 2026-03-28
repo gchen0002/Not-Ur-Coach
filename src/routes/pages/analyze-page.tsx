@@ -1,33 +1,101 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SurfaceCard } from "@/components/ui/surface-card";
+import { getLiveAngles } from "@/lib/angles";
+import { detectCameraAngle } from "@/lib/camera-angle";
+import { drawPoseOverlay } from "@/lib/pose-draw";
+import { evaluateFrameQuality, type PoseLandmarkPoint } from "@/lib/pose";
 import PoseWorker from "@/workers/pose-worker?worker";
 
-type WorkerResponse =
-  | { status: "ready"; message: string }
-  | { status: "frame"; message: string; landmarks: number }
-  | { status: "success"; message: string; landmarks: number }
-  | { status: "error"; message: string };
+type WorkerReadyResponse = { status: "ready"; message: string };
+type WorkerErrorResponse = { status: "error"; message: string };
+type WorkerFrameResponse = {
+  status: "frame";
+  message: string;
+  landmarks: PoseLandmarkPoint[];
+  visibleLandmarks: number;
+  imageWidth: number;
+  imageHeight: number;
+  detectedAt: number;
+};
+
+type WorkerResponse = WorkerReadyResponse | WorkerErrorResponse | WorkerFrameResponse;
+
+type BufferedPoseFrame = {
+  detectedAt: number;
+  visibleLandmarks: number;
+  landmarks: PoseLandmarkPoint[];
+};
+
+const SAMPLE_INTERVAL_MS = 200;
+const MAX_BUFFERED_FRAMES = 30;
 
 export function AnalyzePage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number | null>(null);
   const processingRef = useRef(false);
 
   const [cameraState, setCameraState] = useState<"idle" | "starting" | "live" | "error">("idle");
-  const [workerState, setWorkerState] = useState<"booting" | "ready" | "error">("booting");
+  const [pipelineState, setPipelineState] = useState<"booting" | "ready" | "error">("booting");
   const [statusMessage, setStatusMessage] = useState(
-    "Start camera access to validate Chrome webcam capture and worker-based pose detection.",
+    "Booting the worker-driven pose pipeline so live camera diagnostics stay off the main thread.",
   );
-  const [workerError, setWorkerError] = useState<string | null>(null);
-  const [lastLandmarks, setLastLandmarks] = useState(0);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const [lastLandmarks, setLastLandmarks] = useState<PoseLandmarkPoint[]>([]);
+  const [visibleLandmarks, setVisibleLandmarks] = useState(0);
   const [framesProcessed, setFramesProcessed] = useState(0);
+  const [bufferedFrames, setBufferedFrames] = useState<BufferedPoseFrame[]>([]);
 
   useEffect(() => {
     const worker = new PoseWorker();
-
     workerRef.current = worker;
+
+    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      const response = event.data;
+
+      if (response.status === "ready") {
+        setPipelineState("ready");
+        setPipelineError(null);
+        setStatusMessage("Worker ready. Start the live test to stream pose diagnostics.");
+        return;
+      }
+
+      if (response.status === "error") {
+        processingRef.current = false;
+        setPipelineState("error");
+        setPipelineError(response.message);
+        setStatusMessage(response.message);
+        return;
+      }
+
+      processingRef.current = false;
+      setLastLandmarks(response.landmarks);
+      setVisibleLandmarks(response.visibleLandmarks);
+      setFramesProcessed((count) => count + 1);
+      setBufferedFrames((current) => {
+        const nextFrames = [
+          ...current,
+          {
+            detectedAt: response.detectedAt,
+            visibleLandmarks: response.visibleLandmarks,
+            landmarks: response.landmarks,
+          },
+        ];
+
+        return nextFrames.slice(-MAX_BUFFERED_FRAMES);
+      });
+    };
+
+    worker.onerror = (event) => {
+      processingRef.current = false;
+      const message = event.message || "Pose worker failed while running the live pipeline.";
+      setPipelineState("error");
+      setPipelineError(message);
+      setStatusMessage(message);
+    };
+
     worker.postMessage({
       type: "INIT",
       payload: {
@@ -36,51 +104,6 @@ export function AnalyzePage() {
       },
     });
 
-    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-      const data = event.data;
-      if (data.status === "ready") {
-        setWorkerState("ready");
-        setWorkerError(null);
-        setStatusMessage(data.message);
-        if (streamRef.current && timerRef.current === null) {
-          timerRef.current = window.setInterval(() => {
-            void captureFrame();
-          }, 500);
-          setStatusMessage("Pose worker ready. Sampling live camera frames at 2 FPS.");
-        }
-        return;
-      }
-
-      if (data.status === "frame" || data.status === "success") {
-        setLastLandmarks(data.landmarks);
-        setFramesProcessed((count) => count + 1);
-        setStatusMessage(
-          data.landmarks > 0
-            ? `Pose detected. Streaming at low FPS for stability checks.`
-            : "No pose detected in the current frame. Adjust framing and step back.",
-        );
-        processingRef.current = false;
-        return;
-      }
-
-      if (data.status === "error") {
-        setWorkerState("error");
-        setWorkerError(data.message);
-        setStatusMessage(data.message);
-        console.error("[pose-worker]", data.message);
-        processingRef.current = false;
-      }
-    };
-
-    worker.onerror = (event) => {
-      setWorkerState("error");
-      const message = event.message || "Pose worker crashed. Check browser console for the underlying error.";
-      setWorkerError(message);
-      setStatusMessage(message);
-      console.error("[pose-worker]", event);
-      processingRef.current = false;
-    };
-
     return () => {
       if (timerRef.current) {
         window.clearInterval(timerRef.current);
@@ -88,12 +111,61 @@ export function AnalyzePage() {
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
       worker.terminate();
+      workerRef.current = null;
     };
   }, []);
+
+  const liveAngles = useMemo(() => getLiveAngles(lastLandmarks), [lastLandmarks]);
+  const cameraAngle = useMemo(() => detectCameraAngle(lastLandmarks), [lastLandmarks]);
+  const frameQuality = useMemo(() => evaluateFrameQuality(lastLandmarks), [lastLandmarks]);
+
+  useEffect(() => {
+    if (pipelineState !== "ready") {
+      return;
+    }
+
+    if (lastLandmarks.length === 0) {
+      setStatusMessage(
+        cameraState === "live"
+          ? "Camera live. Step into frame so the worker can lock onto a pose."
+          : "Worker ready. Start the live test to stream pose diagnostics.",
+      );
+      return;
+    }
+
+    const readinessPrefix =
+      frameQuality.readiness === "ready"
+        ? "Pose ready."
+        : frameQuality.readiness === "adjusting"
+          ? "Framing needs a quick adjustment."
+          : "Pose lock is weak.";
+
+    const angleSuffix =
+      cameraAngle.label === "unknown"
+        ? "Camera angle still estimating."
+        : `Camera reads as ${cameraAngle.label}.`;
+
+    setStatusMessage(`${readinessPrefix} ${frameQuality.guidance} ${angleSuffix}`);
+  }, [cameraAngle.label, cameraState, frameQuality.guidance, frameQuality.readiness, lastLandmarks.length, pipelineState]);
+
+  useEffect(() => {
+    const canvas = overlayCanvasRef.current;
+
+    if (!canvas) {
+      return;
+    }
+
+    drawPoseOverlay(canvas, lastLandmarks);
+  }, [lastLandmarks]);
 
   async function startCamera() {
     try {
       setCameraState("starting");
+      setPipelineError(null);
+      setLastLandmarks([]);
+      setVisibleLandmarks(0);
+      setFramesProcessed(0);
+      setBufferedFrames([]);
       setStatusMessage("Requesting camera permission...");
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -115,18 +187,14 @@ export function AnalyzePage() {
       await videoRef.current.play();
 
       setCameraState("live");
-      if (workerState !== "error") {
-        setStatusMessage(
-          workerState === "ready"
-            ? "Camera live. Sampling frames at 2 FPS."
-            : "Camera live. Waiting for MediaPipe worker to finish initializing.",
-        );
-      }
 
-      if (workerState === "ready" && timerRef.current === null) {
+      if (pipelineState === "ready" && timerRef.current === null) {
         timerRef.current = window.setInterval(() => {
           void captureFrame();
-        }, 500);
+        }, SAMPLE_INTERVAL_MS);
+        setStatusMessage("Camera live. Sampling frames through the worker at 5 FPS.");
+      } else if (pipelineState !== "error") {
+        setStatusMessage("Camera live. Waiting for MediaPipe initialization to finish.");
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to access camera";
@@ -149,16 +217,28 @@ export function AnalyzePage() {
     }
 
     processingRef.current = false;
+    setLastLandmarks([]);
+    setVisibleLandmarks(0);
+    setFramesProcessed(0);
+    setBufferedFrames([]);
     setCameraState("idle");
     setStatusMessage("Camera stopped. Restart when you want to test framing again.");
+
+    const canvas = overlayCanvasRef.current;
+    if (canvas) {
+      const context = canvas.getContext("2d");
+      context?.clearRect(0, 0, canvas.width, canvas.height);
+    }
   }
 
   async function captureFrame() {
-    if (processingRef.current || !videoRef.current || !workerRef.current) {
+    const video = videoRef.current;
+    const worker = workerRef.current;
+
+    if (processingRef.current || !video || !worker || pipelineState !== "ready") {
       return;
     }
 
-    const video = videoRef.current;
     if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0) {
       return;
     }
@@ -166,29 +246,48 @@ export function AnalyzePage() {
     processingRef.current = true;
 
     try {
-      const bitmap = await createImageBitmap(video);
-      workerRef.current.postMessage(
+      const image = await createImageBitmap(video);
+      worker.postMessage(
         {
           type: "DETECT_FRAME",
           payload: {
-            image: bitmap,
+            image,
           },
         },
-        [bitmap],
+        [image],
       );
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to process video frame";
       processingRef.current = false;
-      const message = error instanceof Error ? error.message : "Failed to capture frame from video";
+      setPipelineState("error");
+      setPipelineError(message);
       setStatusMessage(message);
+      console.error("[pose-worker]", error);
     }
   }
+
+  useEffect(() => {
+    if (pipelineState === "ready" && cameraState === "live" && timerRef.current === null) {
+      timerRef.current = window.setInterval(() => {
+        void captureFrame();
+      }, SAMPLE_INTERVAL_MS);
+      setStatusMessage("MediaPipe ready. Sampling live camera frames through the worker at 5 FPS.");
+    }
+  }, [cameraState, pipelineState]);
+
+  const readinessTone =
+    frameQuality.readiness === "ready"
+      ? "bg-[#eaf7ef] text-[#1f6b3d]"
+      : frameQuality.readiness === "adjusting"
+        ? "bg-[#fff5e5] text-[#9a5a00]"
+        : "bg-[#fff1f1] text-[#8c1d18]";
 
   return (
     <div className="space-y-6">
       <SurfaceCard
         eyebrow="Block 3"
-        title="Chrome live camera test"
-        description="This is the first real-time validation path: webcam access, frame capture, worker messaging, and MediaPipe pose detection on live video."
+        title="Worker-driven pose pipeline"
+        description="This path keeps live frame analysis off the main thread, draws a skeleton overlay, and surfaces the camera-angle plus angle diagnostics we need before recording or Gemini analysis."
       >
         <div className="flex flex-wrap items-center gap-4">
           <button
@@ -210,7 +309,7 @@ export function AnalyzePage() {
             Stop
           </button>
           <p className="text-sm text-[var(--ink-soft)]">
-            Best test: full body in frame, 6-8 feet back, neutral background, decent light.
+            Best test: full body in frame, 6-8 feet back, neutral background, decent light, ideally a clean side view.
           </p>
         </div>
       </SurfaceCard>
@@ -219,41 +318,115 @@ export function AnalyzePage() {
         <SurfaceCard
           eyebrow="Camera"
           title="Live preview"
-          description="This feed is sampled at low FPS to validate the end-to-end browser path before we add rep detection or overlays."
+          description="Video and canvas stay mirrored together so the overlay tracks what the athlete sees in the preview."
         >
           <div className="relative overflow-hidden rounded-[28px] bg-[#0f172a]">
-            <video
-              ref={videoRef}
-              className="aspect-video w-full object-cover"
-              autoPlay
-              muted
-              playsInline
-            />
+            <div className="relative aspect-video w-full" style={{ transform: "scaleX(-1)" }}>
+              <video
+                ref={videoRef}
+                className="absolute inset-0 h-full w-full object-cover"
+                autoPlay
+                muted
+                playsInline
+              />
+              <canvas
+                ref={overlayCanvasRef}
+                className="pointer-events-none absolute inset-0 h-full w-full"
+              />
+            </div>
             <div className="absolute left-4 top-4 rounded-full bg-black/55 px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-white">
               {cameraState}
             </div>
             <div className="absolute bottom-4 left-4 rounded-[20px] bg-black/55 px-4 py-3 text-sm text-white backdrop-blur">
-              {lastLandmarks > 0 ? `${lastLandmarks} landmarks detected` : "No pose landmarks yet"}
+              {visibleLandmarks > 0 ? `${visibleLandmarks} landmarks visible` : "No pose landmarks yet"}
             </div>
           </div>
         </SurfaceCard>
 
         <SurfaceCard
           eyebrow="Status"
-          title="Worker diagnostics"
+          title="Pose diagnostics"
           description={statusMessage}
         >
-          <div className="space-y-3">
-            {workerError ? (
+          <div className="space-y-4">
+            {pipelineError ? (
               <div className="rounded-[24px] border border-[#f0b8b8] bg-[#fff1f1] px-4 py-3 text-sm text-[#8c1d18]">
-                {workerError}
+                {pipelineError}
               </div>
             ) : null}
+            <div className={`rounded-[24px] px-4 py-3 text-sm font-medium ${readinessTone}`}>
+              {frameQuality.guidance}
+            </div>
             {[
-              ["Worker", workerState],
+              ["Pipeline", pipelineState],
               ["Camera", cameraState],
               ["Frames processed", String(framesProcessed)],
-              ["Last landmark count", String(lastLandmarks)],
+              ["Visible landmarks", String(visibleLandmarks)],
+              ["Camera angle", cameraAngle.label],
+              ["Buffered frames", String(bufferedFrames.length)],
+            ].map(([label, value]) => (
+              <div
+                key={label}
+                className="flex items-center justify-between rounded-[24px] bg-[var(--surface-2)] px-4 py-3 text-sm"
+              >
+                <span className="font-medium text-[var(--ink)]">{label}</span>
+                <span className="text-[var(--ink-soft)]">{value}</span>
+              </div>
+            ))}
+            <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
+              <p className="font-medium text-[var(--ink)]">Camera guidance</p>
+              <p className="mt-2">{cameraAngle.guidance}</p>
+              <p className="mt-2">
+                width ratio: {cameraAngle.widthRatio ?? "-"} | depth ratio: {cameraAngle.depthRatio ?? "-"}
+              </p>
+            </div>
+            {frameQuality.issues.length > 0 ? (
+              <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
+                <p className="font-medium text-[var(--ink)]">Quick fixes</p>
+                <ul className="mt-2 space-y-2">
+                  {frameQuality.issues.map((issue) => (
+                    <li key={issue}>- {issue}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </SurfaceCard>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <SurfaceCard
+          eyebrow="Angles"
+          title="Live joint reads"
+          description="These values update from the worker response and give us the minimum viable debug layer before rep segmentation."
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            {liveAngles.metrics.map((metric) => (
+              <div
+                key={metric.label}
+                className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4"
+              >
+                <p className="text-sm font-medium text-[var(--ink)]">{metric.label}</p>
+                <p className="mt-2 text-2xl font-semibold text-[var(--accent-strong)]">
+                  {metric.value === null ? "--" : `${metric.value}${metric.unit}`}
+                </p>
+              </div>
+            ))}
+          </div>
+        </SurfaceCard>
+
+        <SurfaceCard
+          eyebrow="Pipeline"
+          title="Phase readiness"
+          description="This is the bridge from camera validation into the later rep-detection and analysis blocks."
+        >
+          <div className="grid gap-3">
+            {[
+              ["Full body visible", frameQuality.fullBodyVisible ? "yes" : "no"],
+              ["Centered", frameQuality.centered ? "yes" : "no"],
+              ["Clipped", frameQuality.clipped ? "yes" : "no"],
+              ["Dominant side", liveAngles.dominantSide ?? "unknown"],
+              ["Camera confidence", `${Math.round(cameraAngle.confidence * 100)}%`],
             ].map(([label, value]) => (
               <div
                 key={label}
