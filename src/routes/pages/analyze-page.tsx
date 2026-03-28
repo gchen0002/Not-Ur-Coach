@@ -4,10 +4,12 @@ import {
   PoseLandmarker,
   type PoseLandmarkerResult,
 } from "@mediapipe/tasks-vision";
+import type { Session } from "@google/genai";
 import { useRouter } from "@tanstack/react-router";
 import { makeFunctionReference } from "convex/server";
 import { AnalysisResultsPanel } from "@/components/analyze/analysis-results-panel";
 import { ChatPanel } from "@/components/analyze/chat-panel";
+import { LiveCoachPanel } from "@/components/analyze/live-coach-panel";
 import { LiveSessionPanel } from "@/components/analyze/live-session-panel";
 import { ProgressHistoryPanel } from "@/components/analyze/progress-history-panel";
 import { TempoTrackPanel } from "@/components/analyze/tempo-track-panel";
@@ -18,8 +20,15 @@ import { createAnalysisDraft, createLocalAnalysisRun } from "@/lib/analysis-draf
 import type { AnalysisHistoryEntry, AnalysisRunResult, AnalyzePayload } from "@/lib/analysis-contract";
 import type { ChatMessage, ChatReply, ChatRequest } from "@/lib/chat-contract";
 import { createLocalChatReply } from "@/lib/chat-draft";
-import { createLiveSessionDraft } from "@/lib/live-session";
-import type { LiveSessionRecord, LiveSessionSaveRequest } from "@/lib/live-session-contract";
+import { createHydratedLivePromptBudget, createLiveDeltaPacket, createLiveSessionDraft } from "@/lib/live-session";
+import type {
+  LiveAuthTokenRequest,
+  LiveAuthTokenResult,
+  LiveCoachContextRequest,
+  LiveCoachContextResult,
+  LiveSessionRecord,
+  LiveSessionSaveRequest,
+} from "@/lib/live-session-contract";
 import type { TempoTrackRequest, TempoTrackResponse } from "@/lib/tempo-track-contract";
 import type { TtsRequest, TtsResponse } from "@/lib/tts-contract";
 import { createTempoTrackDraft } from "@/lib/tempo-track-draft";
@@ -121,6 +130,7 @@ function createSeedChatMessage(result: AnalysisRunResult): ChatMessage {
 
 export function AnalyzePage() {
   const router = useRouter();
+  const liveSessionRef = useRef<Session | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -169,6 +179,12 @@ export function AnalyzePage() {
   const [liveSessionState, setLiveSessionState] = useState<"idle" | "saving" | "error">("idle");
   const [liveSessionError, setLiveSessionError] = useState<string | null>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessionRecord[]>([]);
+  const [liveCoachPrepState, setLiveCoachPrepState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [liveCoachPrepError, setLiveCoachPrepError] = useState<string | null>(null);
+  const [liveCoachContext, setLiveCoachContext] = useState<LiveCoachContextResult | null>(null);
+  const [liveCoachConnectionState, setLiveCoachConnectionState] = useState<"idle" | "connecting" | "connected" | "error">("idle");
+  const [liveCoachConnectionError, setLiveCoachConnectionError] = useState<string | null>(null);
+  const [liveCoachTranscript, setLiveCoachTranscript] = useState<Array<{ role: "assistant" | "system"; content: string }>>([]);
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
 
   const recordingSupported = typeof MediaRecorder !== "undefined";
@@ -237,6 +253,8 @@ export function AnalyzePage() {
         ttsAudioRef.current.pause();
         ttsAudioRef.current = null;
       }
+      liveSessionRef.current?.close();
+      liveSessionRef.current = null;
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
     };
@@ -347,6 +365,8 @@ export function AnalyzePage() {
 
   function resetPoseState() {
     processingRef.current = false;
+    liveSessionRef.current?.close();
+    liveSessionRef.current = null;
     setLastLandmarks([]);
     setVisibleLandmarks(0);
     setFramesProcessed(0);
@@ -360,6 +380,12 @@ export function AnalyzePage() {
     setTtsState("idle");
     setTtsError(null);
     setTtsResponse(null);
+    setLiveCoachPrepState("idle");
+    setLiveCoachPrepError(null);
+    setLiveCoachContext(null);
+    setLiveCoachConnectionState("idle");
+    setLiveCoachConnectionError(null);
+    setLiveCoachTranscript([]);
     setVideoAspectRatio(16 / 9);
   }
 
@@ -371,6 +397,60 @@ export function AnalyzePage() {
     }
 
     setVideoAspectRatio(video.videoWidth / video.videoHeight);
+  }
+
+  async function captureCurrentFrameImage() {
+    const video = videoRef.current;
+
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) {
+      throw new Error("A visible video frame is required before Live coach can inspect the exercise.");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      throw new Error("Failed to prepare a video frame for Gemini Live.");
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((value) => {
+        if (value) {
+          resolve(value);
+        } else {
+          reject(new Error("Failed to capture the current video frame."));
+        }
+      }, "image/jpeg", 0.82);
+    });
+
+    return { dataUrl, blob };
+  }
+
+  function buildLiveSnapshotPacket() {
+    const issues = [...frameQuality.issues, ...windowQuality.primaryIssues].slice(0, 2);
+    const phase =
+      analyzePayload.repStats.detectedRepCount === 0
+        ? "setup"
+        : liveAngles.trunkLean !== null && liveAngles.trunkLean > 45
+          ? "stretch"
+          : liveAngles.trunkLean !== null && liveAngles.trunkLean > 25
+            ? "descent"
+            : "unknown";
+
+    return createLiveDeltaPacket({
+      phase,
+      repCount: analyzePayload.repStats.detectedRepCount,
+      confidence: analyzePayload.confidence,
+      notes: [
+        cameraAngle.label !== "unknown" ? `camera ${cameraAngle.label}` : "camera angle still estimating",
+        liveAngles.trunkLean !== null ? `trunk lean ${Math.round(liveAngles.trunkLean)} deg` : "trunk angle unavailable",
+        ...issues,
+      ].slice(0, 4),
+    });
   }
 
   function clearRecordingTimer() {
@@ -950,6 +1030,200 @@ export function AnalyzePage() {
     }
   }
 
+  async function persistLiveCoachTranscriptSnapshot() {
+    if (!convexClient || liveCoachTranscript.length === 0) {
+      return;
+    }
+
+    const assistantMessages = liveCoachTranscript.filter((item) => item.role === "assistant");
+    if (assistantMessages.length === 0) {
+      return;
+    }
+
+    const timestamp = Date.now();
+    const saveRef = makeFunctionReference<"mutation", {
+      sessionId: string;
+      source: string;
+      exercise?: string | null;
+      summary: string;
+      cues: string[];
+      transcript: LiveSessionSaveRequest["transcript"];
+      createdAt: number;
+      endedAt: number;
+    }, string>("liveSession:saveSession");
+
+    await convexClient.mutation(saveRef, {
+      sessionId: `live-${timestamp}`,
+      source: "live_api",
+      exercise: liveCoachContext?.inferredExercise ?? clipName,
+      summary: assistantMessages[assistantMessages.length - 1]?.content ?? "Live coaching session completed.",
+      cues: assistantMessages.map((item) => item.content).slice(-3),
+      transcript: liveCoachTranscript.map((item, index) => ({
+        role: item.role,
+        content: item.content,
+        timestamp: timestamp + index,
+      })),
+      createdAt: timestamp,
+      endedAt: timestamp,
+    });
+
+    const listRef = makeFunctionReference<"query", Record<string, never>, LiveSessionRecord[]>(
+      "liveSession:listRecentSessions",
+    );
+    setLiveSessions(await convexClient.query(listRef, {}));
+  }
+
+  function disconnectLiveCoach() {
+    void persistLiveCoachTranscriptSnapshot();
+    liveSessionRef.current?.close();
+    liveSessionRef.current = null;
+    setLiveCoachConnectionState("idle");
+    setLiveCoachConnectionError(null);
+  }
+
+  async function fetchLiveCoachContext() {
+    if (!convexClient) {
+      throw new Error("Convex is not configured, so Gemini Live prep is unavailable.");
+    }
+    const frame = await captureCurrentFrameImage();
+    const snapshotPacket = buildLiveSnapshotPacket();
+    const request: LiveCoachContextRequest = {
+      userHint: clipName ?? undefined,
+      frameDataUrls: [frame.dataUrl],
+      phaseNotes: snapshotPacket.notes,
+    };
+    const prepareRef = makeFunctionReference<"action", { request: LiveCoachContextRequest }, LiveCoachContextResult>(
+      "liveCoachContext:prepareLiveCoachContext",
+    );
+    return await convexClient.action(prepareRef, { request });
+  }
+
+  async function prepareLiveCoach() {
+    setLiveCoachPrepState("loading");
+    setLiveCoachPrepError(null);
+
+    try {
+      const context = await fetchLiveCoachContext();
+      setLiveCoachContext(context);
+      setLiveCoachPrepState("ready");
+      setLiveCoachPrepError(context.error);
+      setLiveCoachTranscript([{
+        role: "system" as const,
+        content: `Prepared live coaching context for ${context.inferredExercise ?? "an unknown exercise"}.`,
+      }]);
+    } catch (error) {
+      setLiveCoachPrepState("error");
+      setLiveCoachPrepError(error instanceof Error ? error.message : "Failed to prepare Gemini Live coaching context.");
+    }
+  }
+
+  async function connectLiveCoach() {
+    if (!convexClient) {
+      setLiveCoachConnectionState("error");
+      setLiveCoachConnectionError("Convex is not configured, so Gemini Live is unavailable.");
+      return;
+    }
+
+    setLiveCoachConnectionState("connecting");
+    setLiveCoachConnectionError(null);
+
+    try {
+      const resolvedContext = liveCoachContext ?? await fetchLiveCoachContext();
+
+      if (!resolvedContext) {
+        throw new Error("Prepare the live coach context before opening Gemini Live.");
+      }
+
+      setLiveCoachContext(resolvedContext);
+      setLiveCoachPrepState("ready");
+      setLiveCoachPrepError(resolvedContext.error);
+
+      const tokenRef = makeFunctionReference<"action", { request: LiveAuthTokenRequest }, LiveAuthTokenResult>(
+        "liveTokens:createLiveAuthToken",
+      );
+      const tokenResult = await convexClient.action(tokenRef, {
+        request: { context: resolvedContext },
+      });
+
+      if (!tokenResult.tokenName) {
+        throw new Error(tokenResult.error ?? "Gemini Live token was not created.");
+      }
+
+      const { GoogleGenAI } = await import("@google/genai");
+      const ai = new GoogleGenAI({ apiKey: tokenResult.tokenName, apiVersion: "v1alpha" });
+      const session = await ai.live.connect({
+        model: tokenResult.model,
+        callbacks: {
+          onopen: () => {
+            setLiveCoachConnectionState("connected");
+            setLiveCoachTranscript((current) => [
+              ...current,
+              {
+                role: "system" as const,
+                content: `Gemini Live connected for ${resolvedContext.inferredExercise ?? "the current exercise"}.`,
+              },
+            ]);
+          },
+          onmessage: (message) => {
+            const text = message.text?.trim();
+
+            if (!text) {
+              return;
+            }
+
+            setLiveCoachTranscript((current) => [...current, { role: "assistant" as const, content: text }].slice(-16));
+          },
+          onerror: (event) => {
+            setLiveCoachConnectionState("error");
+            setLiveCoachConnectionError(event.message || "Gemini Live connection failed.");
+          },
+          onclose: () => {
+            liveSessionRef.current = null;
+            setLiveCoachConnectionState("idle");
+          },
+        },
+      });
+
+      liveSessionRef.current = session;
+      const hydratedContext = createHydratedLivePromptBudget(resolvedContext);
+      session.sendClientContent({
+        turns: `Session context: ${JSON.stringify(hydratedContext)}. Wait for incoming snapshots and reply with one short coaching cue when the user asks for a snapshot assessment.`,
+        turnComplete: true,
+      });
+    } catch (error) {
+      liveSessionRef.current?.close();
+      liveSessionRef.current = null;
+      setLiveCoachConnectionState("error");
+      setLiveCoachConnectionError(error instanceof Error ? error.message : "Failed to connect Gemini Live.");
+    }
+  }
+
+  async function sendLiveSnapshot() {
+    const session = liveSessionRef.current;
+
+    if (!session) {
+      setLiveCoachConnectionError("Start the Gemini Live session before sending a snapshot.");
+      return;
+    }
+
+    try {
+      const frame = await captureCurrentFrameImage();
+      const snapshotPacket = buildLiveSnapshotPacket();
+      const videoBlob = frame.blob as unknown as Parameters<Session["sendRealtimeInput"]>[0]["video"];
+      session.sendRealtimeInput({
+        video: videoBlob,
+        text: JSON.stringify(snapshotPacket),
+      });
+      session.sendClientContent({
+        turns: "Assess the latest visible rep state and return the single most useful cue in one short sentence.",
+        turnComplete: true,
+      });
+    } catch (error) {
+      setLiveCoachConnectionState("error");
+      setLiveCoachConnectionError(error instanceof Error ? error.message : "Failed to send a live coaching snapshot.");
+    }
+  }
+
   async function captureFrame() {
     const video = videoRef.current;
     const landmarker = landmarkerRef.current;
@@ -1336,6 +1610,20 @@ export function AnalyzePage() {
         trackError={tempoTrackError}
         response={tempoTrackResponse}
         onGenerate={generateTempoTrack}
+      />
+
+      <LiveCoachPanel
+        canPrepare={sourceType !== null}
+        prepState={liveCoachPrepState}
+        prepError={liveCoachPrepError}
+        context={liveCoachContext}
+        connectionState={liveCoachConnectionState}
+        connectionError={liveCoachConnectionError}
+        transcript={liveCoachTranscript}
+        onPrepare={prepareLiveCoach}
+        onConnect={connectLiveCoach}
+        onDisconnect={disconnectLiveCoach}
+        onSendSnapshot={sendLiveSnapshot}
       />
 
       <LiveSessionPanel

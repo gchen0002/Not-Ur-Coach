@@ -50,3 +50,14 @@ export type LiveCoachContextResult = {
   candidateExercises: string[];
   error: string | null;
 };
+
+export type LiveAuthTokenRequest = {
+  context: LiveCoachContextResult;
+};
+
+export type LiveAuthTokenResult = {
+  tokenName: string | null;
+  model: string;
+  expiresAt: string | null;
+  error: string | null;
+};
