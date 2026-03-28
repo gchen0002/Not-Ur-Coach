@@ -7,5 +7,9 @@ export type TtsRequest = {
 export type TtsResponse = {
   script: string;
   provider: "gemini" | "heuristic" | "local";
+  audioUrl: string | null;
+  mimeType: string | null;
+  voiceName: string | null;
+  cached: boolean;
   error: string | null;
 };

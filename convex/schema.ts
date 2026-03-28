@@ -143,11 +143,51 @@ export default defineSchema({
     error: v.optional(v.string()),
   }).index("by_exercise", ["exercise"]),
 
+  ttsAudio: defineTable({
+    cacheKey: v.string(),
+    script: v.string(),
+    provider: v.string(),
+    voiceName: v.optional(v.string()),
+    storageId: v.optional(v.id("_storage")),
+    mimeType: v.optional(v.string()),
+    error: v.optional(v.string()),
+  }).index("by_cacheKey", ["cacheKey"]),
+
+  tempoTracks: defineTable({
+    cacheKey: v.string(),
+    bpm: v.number(),
+    tempoPattern: v.string(),
+    style: v.string(),
+    prompt: v.string(),
+    provider: v.string(),
+    storageId: v.optional(v.id("_storage")),
+    mimeType: v.optional(v.string()),
+    status: v.string(),
+    error: v.optional(v.string()),
+  }).index("by_cacheKey", ["cacheKey"]),
+
   equipment: defineTable({
     name: v.string(),
     aliases: v.array(v.string()),
     icon: v.optional(v.string()),
   }).index("by_name", ["name"]),
+
+  liveSessions: defineTable({
+    sessionId: v.string(),
+    source: v.string(),
+    exercise: v.optional(v.string()),
+    summary: v.string(),
+    cues: v.array(v.string()),
+    transcript: v.array(v.object({
+      role: v.union(v.literal("user"), v.literal("assistant"), v.literal("system")),
+      content: v.string(),
+      timestamp: v.number(),
+    })),
+    createdAt: v.number(),
+    endedAt: v.number(),
+  })
+    .index("by_sessionId", ["sessionId"])
+    .index("by_createdAt", ["createdAt"]),
 
   messages: defineTable({
     userId: v.id("users"),

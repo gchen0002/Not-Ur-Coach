@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { actionGeneric, mutationGeneric } from "convex/server";
+import { actionGeneric, makeFunctionReference, mutationGeneric } from "convex/server";
 import { v } from "convex/values";
 import { EXERCISE_RESEARCH_CATALOG } from "./researchCatalog";
 
@@ -47,31 +47,16 @@ async function embedText(ai: GoogleGenAI, text: string) {
       model: "gemini-embedding-2",
       contents: text,
       config: { outputDimensionality: 768 },
-    })) as any;
+    })) as {
+      embeddings?: Array<{ values?: number[] }>;
+      embedding?: { values?: number[] };
+    };
 
     const values = response?.embeddings?.[0]?.values ?? response?.embedding?.values;
     return Array.isArray(values) && values.length === 768 ? values : zeroEmbedding();
   } catch {
     return zeroEmbedding();
   }
-}
-
-async function ensureEquipment(ctx: any, name: string) {
-  const existing = await ctx.db
-    .query("equipment")
-    .withIndex("by_name", (query: any) => query.eq("name", name))
-    .first();
-
-  if (existing) {
-    return existing._id;
-  }
-
-  const metadata = EQUIPMENT_ALIASES[name] ?? { aliases: [] };
-  return await ctx.db.insert("equipment", {
-    name,
-    aliases: metadata.aliases,
-    icon: metadata.icon,
-  });
 }
 
 export const upsertExerciseResearchCatalog = mutationGeneric({
@@ -84,7 +69,22 @@ export const upsertExerciseResearchCatalog = mutationGeneric({
       const equipmentIds = [];
 
       for (const equipmentName of exercise.requiredEquipmentNames) {
-        equipmentIds.push(await ensureEquipment(ctx, equipmentName));
+        const existingEquipment = await ctx.db
+          .query("equipment")
+          .withIndex("by_name", (query) => query.eq("name", equipmentName))
+          .first();
+
+        if (existingEquipment) {
+          equipmentIds.push(existingEquipment._id);
+          continue;
+        }
+
+        const metadata = EQUIPMENT_ALIASES[equipmentName] ?? { aliases: [] };
+        equipmentIds.push(await ctx.db.insert("equipment", {
+          name: equipmentName,
+          aliases: metadata.aliases,
+          icon: metadata.icon,
+        }));
       }
 
       const existingExercise = await ctx.db
@@ -156,8 +156,34 @@ export const seedExerciseResearchCatalog = actionGeneric({
       }
     }
 
-    return await ctx.runMutation("researchSeed:upsertExerciseResearchCatalog" as any, {
-      exercises: EXERCISE_RESEARCH_CATALOG.map(({ researchChunks: _researchChunks, ...exercise }) => exercise),
+    const upsertRef = makeFunctionReference<"mutation", {
+      exercises: Array<{
+        name: string;
+        primaryJoints: string[];
+        muscles: string[];
+        movementPattern: string;
+        biasSummary: string;
+        evidenceLevel: string;
+        requiredEquipmentNames: string[];
+        depthHeuristic: unknown;
+        keyAngleChecks: unknown[];
+      }>;
+      researchChunks: Array<{
+        source: string;
+        sourceType: string;
+        text: string;
+        exercises: string[];
+        muscles: string[];
+        embedding: number[];
+      }>;
+    }, { exerciseCount: number; researchChunkCount: number }>("researchSeed:upsertExerciseResearchCatalog");
+
+    return await ctx.runMutation(upsertRef, {
+      exercises: EXERCISE_RESEARCH_CATALOG.map((entry) => {
+        const { researchChunks: nestedResearchChunks, ...exercise } = entry;
+        void nestedResearchChunks;
+        return exercise;
+      }),
       researchChunks,
     });
   },

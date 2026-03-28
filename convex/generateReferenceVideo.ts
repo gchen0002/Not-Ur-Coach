@@ -9,6 +9,35 @@ import type {
 import { createReferenceClipDraft } from "../src/lib/reference-clip-draft";
 import { buildReferenceClipPackage } from "./generateReferenceClip";
 
+type VideoModelListItem = {
+  name: string;
+  supportedActions?: string[];
+};
+
+type ModelListResponse = {
+  page?: VideoModelListItem[];
+  models?: VideoModelListItem[];
+};
+
+type GeneratedVideoPart = {
+  uri?: string;
+  mimeType?: string;
+};
+
+type VideoOperation = {
+  done?: boolean;
+  name?: string;
+  response?: {
+    generatedVideos?: Array<{
+      video?: GeneratedVideoPart;
+    }>;
+  };
+};
+
+type PersistedReferenceRecord = {
+  storageUrl: string | null;
+};
+
 const referenceClipRequestValidator = v.object({
   exercise: v.string(),
   muscles: v.array(v.string()),
@@ -28,12 +57,12 @@ function pickVideoModel(modelOverride?: string) {
 }
 
 async function listAvailableVideoModels(ai: GoogleGenAI) {
-  const response = await ai.models.list({}) as any;
+  const response = await ai.models.list({}) as ModelListResponse;
   const models = response.page ?? response.models ?? [];
 
   return models
-    .filter((model: any) => Array.isArray(model.supportedActions) && model.supportedActions.includes("generateVideos"))
-    .map((model: any) => model.name as string);
+    .filter((model) => Array.isArray(model.supportedActions) && model.supportedActions.includes("generateVideos"))
+    .map((model) => model.name);
 }
 
 function resolvePreferredModel(availableModels: string[], requestedModel?: string) {
@@ -67,53 +96,8 @@ function resolvePreferredModel(availableModels: string[], requestedModel?: strin
   return requestedModel || pickVideoModel();
 }
 
-function getGeneratedVideo(operation: any) {
+function getGeneratedVideo(operation: VideoOperation) {
   return operation?.response?.generatedVideos?.[0]?.video ?? null;
-}
-
-async function persistReferenceVideo(ctx: any, params: {
-  request: ReferenceClipRequest;
-  promptPackage: ReferenceClipResult;
-  model: string;
-  provider: "gemini" | "heuristic";
-  status: string;
-  videoUri?: string | null;
-  error?: string | null;
-  apiKey: string;
-}) {
-  let storageId: any = undefined;
-
-  if (params.videoUri) {
-    const response = await fetch(params.videoUri, {
-      headers: {
-        "x-goog-api-key": params.apiKey,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch generated video: ${response.status} ${response.statusText}`);
-    }
-
-    const blob = await response.blob();
-    storageId = await ctx.storage.store(blob);
-  }
-
-  const upsertRef = makeFunctionReference<"mutation", any, boolean>("referenceVideos:upsertReferenceVideo");
-  await ctx.runMutation(upsertRef, {
-    exercise: params.request.exercise,
-    variant: params.request.variant,
-    cameraAngle: params.request.cameraAngle,
-    model: params.model,
-    provider: params.provider,
-    storageId,
-    sourceUri: params.videoUri ?? undefined,
-    promptPackage: params.promptPackage,
-    status: params.status,
-    error: params.error ?? undefined,
-  });
-
-  const getRef = makeFunctionReference<"query", { exercise: string }, any>("referenceVideos:getByExercise");
-  return await ctx.runQuery(getRef, { exercise: params.request.exercise });
 }
 
 export const generateReferenceVideo = actionGeneric({
@@ -194,15 +178,46 @@ export const generateReferenceVideo = actionGeneric({
         } satisfies ReferenceVideoGenerationResult;
       }
 
-      const persisted = await persistReferenceVideo(ctx, {
-        request,
-        promptPackage,
+      const response = await fetch(generatedVideo.uri, {
+        headers: {
+          "x-goog-api-key": apiKey,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch generated video: ${response.status} ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      const storageId = await ctx.storage.store(blob);
+      const upsertRef = makeFunctionReference<"mutation", {
+        exercise: string;
+        variant: string;
+        cameraAngle: string;
+        model: string;
+        provider: string;
+        storageId?: unknown;
+        sourceUri?: string;
+        promptPackage: ReferenceClipResult;
+        status: string;
+        error?: string;
+      }, boolean>("referenceVideos:upsertReferenceVideo");
+      await ctx.runMutation(upsertRef, {
+        exercise: request.exercise,
+        variant: request.variant,
+        cameraAngle: request.cameraAngle,
         model,
         provider: "gemini",
+        storageId,
+        sourceUri: generatedVideo.uri,
+        promptPackage,
         status: "generated",
-        videoUri: generatedVideo.uri,
-        apiKey,
       });
+
+      const getRef = makeFunctionReference<"query", { exercise: string }, PersistedReferenceRecord | null>(
+        "referenceVideos:getByExercise",
+      );
+      const persisted = await ctx.runQuery(getRef, { exercise: request.exercise });
 
       return {
         provider: "gemini",

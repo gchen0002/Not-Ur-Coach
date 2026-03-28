@@ -1,6 +1,18 @@
 import { GoogleGenAI } from "@google/genai";
 import { actionGeneric } from "convex/server";
 
+type VideoModelListItem = {
+  name: string;
+  displayName?: string;
+  description?: string;
+  supportedActions?: string[];
+};
+
+type ModelListResponse = {
+  page?: VideoModelListItem[];
+  models?: VideoModelListItem[];
+};
+
 export const listVideoModels = actionGeneric({
   args: {},
   handler: async () => {
@@ -11,12 +23,12 @@ export const listVideoModels = actionGeneric({
     }
 
     const ai = new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
-    const response = await ai.models.list({}) as any;
+    const response = await ai.models.list({}) as ModelListResponse;
     const models = response.page ?? response.models ?? [];
 
     return models
-      .filter((model: any) => Array.isArray(model.supportedActions) && model.supportedActions.includes("generateVideos"))
-      .map((model: any) => ({
+      .filter((model) => Array.isArray(model.supportedActions) && model.supportedActions.includes("generateVideos"))
+      .map((model) => ({
         name: model.name,
         displayName: model.displayName ?? null,
         description: model.description ?? null,

@@ -8,7 +8,9 @@ import { useRouter } from "@tanstack/react-router";
 import { makeFunctionReference } from "convex/server";
 import { AnalysisResultsPanel } from "@/components/analyze/analysis-results-panel";
 import { ChatPanel } from "@/components/analyze/chat-panel";
+import { LiveSessionPanel } from "@/components/analyze/live-session-panel";
 import { ProgressHistoryPanel } from "@/components/analyze/progress-history-panel";
+import { TempoTrackPanel } from "@/components/analyze/tempo-track-panel";
 import { TtsPanel } from "@/components/analyze/tts-panel";
 import { appendAnalysisHistory, loadAnalysisHistory } from "@/lib/analysis-history";
 import { buildAnalyzePayload, type BufferedPoseFrame } from "@/lib/analysis-payload";
@@ -16,7 +18,11 @@ import { createAnalysisDraft, createLocalAnalysisRun } from "@/lib/analysis-draf
 import type { AnalysisHistoryEntry, AnalysisRunResult, AnalyzePayload } from "@/lib/analysis-contract";
 import type { ChatMessage, ChatReply, ChatRequest } from "@/lib/chat-contract";
 import { createLocalChatReply } from "@/lib/chat-draft";
+import { createLiveSessionDraft } from "@/lib/live-session";
+import type { LiveSessionRecord, LiveSessionSaveRequest } from "@/lib/live-session-contract";
+import type { TempoTrackRequest, TempoTrackResponse } from "@/lib/tempo-track-contract";
 import type { TtsRequest, TtsResponse } from "@/lib/tts-contract";
+import { createTempoTrackDraft } from "@/lib/tempo-track-draft";
 import { createLocalTtsResponse } from "@/lib/tts-draft";
 import { getLiveAngles } from "@/lib/angles";
 import { detectCameraAngle } from "@/lib/camera-angle";
@@ -115,6 +121,7 @@ function createSeedChatMessage(result: AnalysisRunResult): ChatMessage {
 
 export function AnalyzePage() {
   const router = useRouter();
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -156,6 +163,12 @@ export function AnalyzePage() {
   const [ttsState, setTtsState] = useState<"idle" | "loading" | "speaking" | "error">("idle");
   const [ttsError, setTtsError] = useState<string | null>(null);
   const [ttsResponse, setTtsResponse] = useState<TtsResponse | null>(null);
+  const [tempoTrackState, setTempoTrackState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [tempoTrackError, setTempoTrackError] = useState<string | null>(null);
+  const [tempoTrackResponse, setTempoTrackResponse] = useState<TempoTrackResponse | null>(null);
+  const [liveSessionState, setLiveSessionState] = useState<"idle" | "saving" | "error">("idle");
+  const [liveSessionError, setLiveSessionError] = useState<string | null>(null);
+  const [liveSessions, setLiveSessions] = useState<LiveSessionRecord[]>([]);
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
 
   const recordingSupported = typeof MediaRecorder !== "undefined";
@@ -220,10 +233,33 @@ export function AnalyzePage() {
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
       }
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current = null;
+      }
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    async function loadLiveSessions() {
+      if (!convexClient) {
+        return;
+      }
+
+      try {
+        const listRef = makeFunctionReference<"query", Record<string, never>, LiveSessionRecord[]>(
+          "liveSession:listRecentSessions",
+        );
+        setLiveSessions(await convexClient.query(listRef, {}));
+      } catch {
+        // keep analyze page usable if live-session history is not ready yet
+      }
+    }
+
+    void loadLiveSessions();
+  }, [convexClient]);
 
   const liveAngles = useMemo(() => getLiveAngles(lastLandmarks), [lastLandmarks]);
   const cameraAngle = useMemo(() => detectCameraAngle(lastLandmarks), [lastLandmarks]);
@@ -719,6 +755,12 @@ export function AnalyzePage() {
   }
 
   function stopSpeech() {
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current.currentTime = 0;
+      ttsAudioRef.current = null;
+    }
+
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -749,6 +791,27 @@ export function AnalyzePage() {
     setTtsState("speaking");
   }
 
+  function playAudioUrl(audioUrl: string) {
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current = null;
+    }
+
+    const audio = new Audio(audioUrl);
+    audio.onended = () => {
+      ttsAudioRef.current = null;
+      setTtsState("idle");
+    };
+    audio.onerror = () => {
+      ttsAudioRef.current = null;
+      setTtsState("error");
+      setTtsError("Generated audio playback failed.");
+    };
+    ttsAudioRef.current = audio;
+    void audio.play();
+    setTtsState("speaking");
+  }
+
   async function playTts() {
     if (!analysisResult) {
       return;
@@ -769,7 +832,11 @@ export function AnalyzePage() {
 
       setTtsResponse(response);
       setTtsError(response.error);
-      speakScript(response.script);
+      if (response.audioUrl) {
+        playAudioUrl(response.audioUrl);
+      } else {
+        speakScript(response.script);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to generate spoken feedback.";
       const fallback = createLocalTtsResponse(analysisResult);
@@ -784,6 +851,102 @@ export function AnalyzePage() {
           playbackError instanceof Error ? playbackError.message : "Failed to play spoken feedback.",
         );
       }
+    }
+  }
+
+  async function generateTempoTrack() {
+    if (!analysisResult) {
+      return;
+    }
+
+    setTempoTrackState("loading");
+    setTempoTrackError(null);
+
+    try {
+      const response = !convexClient
+        ? createTempoTrackDraft(analysisResult)
+        : await convexClient.action(
+          makeFunctionReference<"action", TempoTrackRequest, TempoTrackResponse>(
+            "generateTempoTrack:generateTempoTrack",
+          ),
+          { analysisResult },
+        );
+
+      setTempoTrackResponse(response);
+      setTempoTrackState(response.status === "failed" ? "error" : "ready");
+      setTempoTrackError(response.error);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Tempo track generation failed.";
+      setTempoTrackResponse(createTempoTrackDraft(analysisResult));
+      setTempoTrackState("error");
+      setTempoTrackError(message);
+    }
+  }
+
+  async function saveLiveSessionHandoff() {
+    if (!analysisResult) {
+      return;
+    }
+
+    setLiveSessionState("saving");
+    setLiveSessionError(null);
+
+    try {
+      const draft = createLiveSessionDraft(analysisResult, chatMessages);
+      const payload: LiveSessionSaveRequest = {
+        source: "handoff",
+        exercise: clipName,
+        summary: draft.summary,
+        cues: draft.cues,
+        transcript: draft.transcript,
+      };
+
+      if (convexClient) {
+        const saveRef = makeFunctionReference<"mutation", {
+          sessionId: string;
+          source: string;
+          exercise?: string | null;
+          summary: string;
+          cues: string[];
+          transcript: LiveSessionSaveRequest["transcript"];
+          createdAt: number;
+          endedAt: number;
+        }, string>("liveSession:saveSession");
+        const timestamp = Date.now();
+        const sessionId = `handoff-${timestamp}`;
+
+        await convexClient.mutation(saveRef, {
+          sessionId,
+          source: payload.source,
+          exercise: payload.exercise,
+          summary: payload.summary,
+          cues: payload.cues,
+          transcript: payload.transcript,
+          createdAt: timestamp,
+          endedAt: timestamp,
+        });
+
+        const listRef = makeFunctionReference<"query", Record<string, never>, LiveSessionRecord[]>(
+          "liveSession:listRecentSessions",
+        );
+        setLiveSessions(await convexClient.query(listRef, {}));
+      } else {
+        setLiveSessions((current) => [{
+          sessionId: `handoff-${Date.now()}`,
+          source: payload.source,
+          exercise: payload.exercise ?? null,
+          summary: payload.summary,
+          cues: payload.cues,
+          transcript: payload.transcript,
+          createdAt: Date.now(),
+          endedAt: Date.now(),
+        }, ...current].slice(0, 6));
+      }
+
+      setLiveSessionState("idle");
+    } catch (error) {
+      setLiveSessionState("error");
+      setLiveSessionError(error instanceof Error ? error.message : "Failed to save live-session handoff.");
     }
   }
 
@@ -854,7 +1017,7 @@ export function AnalyzePage() {
     if (!shouldSample && timerRef.current !== null) {
       stopSampling();
     }
-  }, [cameraState, clipState, pipelineState, sourceType]);
+  }, [cameraState, clipState, pipelineState, sourceType, startSampling, stopSampling]);
 
   const readinessTone =
     frameQuality.readiness === "ready"
@@ -1164,6 +1327,22 @@ export function AnalyzePage() {
         lastResponse={ttsResponse}
         onSpeak={playTts}
         onStop={stopSpeech}
+      />
+
+      <TempoTrackPanel
+        canGenerate={Boolean(analysisResult)}
+        trackState={tempoTrackState}
+        trackError={tempoTrackError}
+        response={tempoTrackResponse}
+        onGenerate={generateTempoTrack}
+      />
+
+      <LiveSessionPanel
+        canSave={Boolean(analysisResult)}
+        saveState={liveSessionState}
+        saveError={liveSessionError}
+        sessions={liveSessions}
+        onSave={saveLiveSessionHandoff}
       />
 
       {/* ─── Progress + Chat side by side ─── */}

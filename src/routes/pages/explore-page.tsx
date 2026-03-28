@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { BookOpenIcon, MagnifyingGlassIcon, PlusIcon, SparklesIcon, VideoCameraIcon } from "@heroicons/react/24/outline";
 import { useRouter } from "@tanstack/react-router";
 import { makeFunctionReference } from "convex/server";
+import type { EquipmentDetectionRequest, EquipmentDetectionResult } from "@/lib/equipment-detection-contract";
 import { SEEDED_EXERCISE_CATALOG } from "@/lib/exercise-catalog";
 import type { ExerciseCatalogEntry, ExerciseIntakeRequest, ExerciseIntakeResult } from "@/lib/exercise-intake-contract";
 import { resolveExerciseIntake } from "@/lib/exercise-intake-draft";
@@ -69,8 +70,24 @@ function buildReferenceRequest(exercise: ExerciseCatalogEntry) {
   });
 }
 
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Failed to read equipment photo."));
+      }
+    };
+    reader.onerror = () => reject(new Error("Failed to read equipment photo."));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function ExplorePage() {
   const router = useRouter();
+  const equipmentPhotoInputRef = useRef<HTMLInputElement | null>(null);
   const convexClient = router.options.context.convexClient;
   const [searchValue, setSearchValue] = useState("");
   const [selectedGroup, setSelectedGroup] = useState("All");
@@ -82,6 +99,12 @@ export function ExplorePage() {
   const [referenceResults, setReferenceResults] = useState<Record<string, ReferenceVideoGenerationResult>>({});
   const [referenceStates, setReferenceStates] = useState<Record<string, ReferenceState>>({});
   const [referenceErrors, setReferenceErrors] = useState<Record<string, string | null>>({});
+  const [equipmentPhotoDataUrl, setEquipmentPhotoDataUrl] = useState<string | null>(null);
+  const [equipmentPhotoName, setEquipmentPhotoName] = useState<string | null>(null);
+  const [equipmentPhotoNotes, setEquipmentPhotoNotes] = useState("");
+  const [equipmentDetectionState, setEquipmentDetectionState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [equipmentDetectionResult, setEquipmentDetectionResult] = useState<EquipmentDetectionResult | null>(null);
+  const [savedEquipment, setSavedEquipment] = useState<string[]>([]);
 
   const allExercises = useMemo(
     () => dedupeExercises([...SEEDED_EXERCISE_CATALOG, ...catalogExercises]),
@@ -113,12 +136,17 @@ export function ExplorePage() {
         const referenceRef = makeFunctionReference<"query", Record<string, never>, PersistedReference[]>(
           "referenceVideos:listAll",
         );
-        const [catalog, references] = await Promise.all([
+        const savedEquipmentRef = makeFunctionReference<"query", Record<string, never>, string[]>(
+          "users:getSavedEquipment",
+        );
+        const [catalog, references, saved] = await Promise.all([
           convexClient.query(catalogRef, {}),
           convexClient.query(referenceRef, {}),
+          convexClient.query(savedEquipmentRef, {}),
         ]);
 
         setCatalogExercises(catalog);
+        setSavedEquipment(saved);
         setReferenceResults(
           references.reduce<Record<string, ReferenceVideoGenerationResult>>((accumulator, reference) => {
             accumulator[normalizeName(reference.exercise)] = toReferenceResult(reference);
@@ -212,6 +240,82 @@ export function ExplorePage() {
     }
   }
 
+  async function handleEquipmentPhotoChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      setEquipmentPhotoDataUrl(await readFileAsDataUrl(file));
+      setEquipmentPhotoName(file.name);
+      setEquipmentDetectionResult(null);
+      setEquipmentDetectionState("idle");
+    } catch (error) {
+      setEquipmentDetectionState("error");
+      setEquipmentDetectionResult({
+        provider: "heuristic",
+        detectedEquipment: [],
+        summary: "",
+        error: error instanceof Error ? error.message : "Failed to load equipment photo.",
+      });
+    }
+  }
+
+  async function detectEquipmentFromPhoto() {
+    if (!equipmentPhotoDataUrl) {
+      return;
+    }
+
+    setEquipmentDetectionState("loading");
+    setEquipmentDetectionResult(null);
+
+    try {
+      if (!convexClient) {
+        throw new Error("Convex is not configured, so equipment photo recognition is unavailable.");
+      }
+
+      const identifyRef = makeFunctionReference<"action", { request: EquipmentDetectionRequest }, EquipmentDetectionResult>(
+        "identifyEquipment:identifyEquipment",
+      );
+      const result = await convexClient.action(identifyRef, {
+        request: {
+          imageDataUrl: equipmentPhotoDataUrl,
+          notes: equipmentPhotoNotes.trim() || undefined,
+        },
+      });
+
+      setEquipmentDetectionResult(result);
+      setEquipmentDetectionState(result.error ? "error" : "done");
+    } catch (error) {
+      setEquipmentDetectionState("error");
+      setEquipmentDetectionResult({
+        provider: "heuristic",
+        detectedEquipment: [],
+        summary: "",
+        error: error instanceof Error ? error.message : "Equipment identification failed.",
+      });
+    }
+  }
+
+  async function saveDetectedEquipment() {
+    const names = equipmentDetectionResult?.detectedEquipment.map((item) => item.matchedCatalogName) ?? [];
+
+    if (names.length === 0) {
+      return;
+    }
+
+    if (!convexClient) {
+      setSavedEquipment(names);
+      return;
+    }
+
+    const saveRef = makeFunctionReference<"mutation", { names: string[] }, string[]>("users:saveSavedEquipment");
+    const saved = await convexClient.mutation(saveRef, { names });
+    setSavedEquipment(saved);
+  }
+
   return (
     <div className="space-y-8 pb-12">
       <div>
@@ -222,6 +326,114 @@ export function ExplorePage() {
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-secondary)]">
           Browse the seeded catalog, generate reference videos for any card, and turn unknown movements into saved AI-generated exercises with their own Block 10 clip pipeline.
         </p>
+      </div>
+
+      <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-[var(--ink)]">Equipment photo recognition</p>
+            <p className="mt-1 text-sm leading-6 text-[var(--ink-muted)]">
+              Snap the booth setup, let Gemini match the visible equipment, then save the detected gear to the demo profile for Explore filtering.
+            </p>
+          </div>
+          <SparklesIcon className="h-5 w-5 shrink-0 text-[var(--accent)]" />
+        </div>
+
+        <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="space-y-3">
+            <input
+              ref={equipmentPhotoInputRef}
+              type="file"
+              accept="image/*"
+              onChange={(event) => {
+                void handleEquipmentPhotoChange(event);
+              }}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => equipmentPhotoInputRef.current?.click()}
+              className="inline-flex items-center gap-2 rounded-full border border-[var(--outline)] bg-white px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+            >
+              <PlusIcon className="h-4 w-4" />
+              {equipmentPhotoName ? `Change photo (${equipmentPhotoName})` : "Upload equipment photo"}
+            </button>
+
+            <textarea
+              value={equipmentPhotoNotes}
+              onChange={(event) => setEquipmentPhotoNotes(event.target.value)}
+              rows={2}
+              placeholder="Optional note: barbell, squat rack, flat bench, and plates"
+              className="w-full rounded-2xl border border-[var(--outline)] bg-[var(--surface-1)] px-4 py-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+            />
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  void detectEquipmentFromPhoto();
+                }}
+                disabled={!equipmentPhotoDataUrl || equipmentDetectionState === "loading"}
+                className="rounded-full bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {equipmentDetectionState === "loading" ? "Checking photo..." : "Detect equipment"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void saveDetectedEquipment();
+                }}
+                disabled={!equipmentDetectionResult || equipmentDetectionResult.detectedEquipment.length === 0}
+                className="rounded-full border border-[var(--outline)] bg-white px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:border-[var(--accent)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Save detected gear
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {equipmentPhotoDataUrl ? (
+              <img
+                src={equipmentPhotoDataUrl}
+                alt="Uploaded equipment"
+                className="h-48 w-full rounded-2xl object-cover ring-1 ring-[var(--outline)]"
+              />
+            ) : (
+              <div className="flex h-48 items-center justify-center rounded-2xl bg-[var(--surface-2)] text-sm text-[var(--ink-muted)] ring-1 ring-[var(--outline)]">
+                Upload a gym setup photo to detect equipment.
+              </div>
+            )}
+
+            <div className="rounded-2xl bg-[var(--surface-2)] p-4 text-sm text-[var(--ink-secondary)]">
+              <p className="font-medium text-[var(--ink)]">Saved equipment</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {savedEquipment.length > 0 ? savedEquipment.map((item) => (
+                  <span key={item} className="rounded-full bg-white px-3 py-1 text-xs shadow-sm">
+                    {item}
+                  </span>
+                )) : (
+                  <span className="text-[var(--ink-muted)]">No saved equipment yet.</span>
+                )}
+              </div>
+              {equipmentDetectionResult ? (
+                <div className="mt-4">
+                  <p className="font-medium text-[var(--ink)]">Latest detection</p>
+                  <p className="mt-2 leading-6">{equipmentDetectionResult.summary}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {equipmentDetectionResult.detectedEquipment.map((item) => (
+                      <span key={`${item.matchedCatalogName}-${item.confidence}`} className="rounded-full bg-white px-3 py-1 text-xs shadow-sm">
+                        {item.matchedCatalogName} {Math.round(item.confidence * 100)}%
+                      </span>
+                    ))}
+                  </div>
+                  {equipmentDetectionResult.error ? (
+                    <p className="mt-3 text-red-700">{equipmentDetectionResult.error}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center">

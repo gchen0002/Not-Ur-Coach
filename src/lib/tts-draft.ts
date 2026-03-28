@@ -13,6 +13,10 @@ export function createLocalTtsResponse(analysisResult: AnalysisRunResult): TtsRe
   return {
     script: `${intro} Main focus: ${topCue} Biggest fix: ${mainFix}`,
     provider: "local",
+    audioUrl: null,
+    mimeType: null,
+    voiceName: null,
+    cached: false,
     error: null,
   };
 }
