@@ -70,48 +70,56 @@ function extractJsonObject(text: string) {
   return text.slice(start, end + 1);
 }
 
+export async function buildReferenceClipPackage(
+  request: ReferenceClipRequest,
+  apiKey?: string,
+): Promise<ReferenceClipResult> {
+  const fallback = createReferenceClipDraft(request);
+
+  if (!apiKey) {
+    return fallback;
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [
+        "You are preparing a Veo reference-clip generation package for a fitness coaching app.",
+        "Return JSON only.",
+        "Produce a concise shot plan and a Veo-ready prompt for an ideal-form reference video.",
+        "Use this exact shape:",
+        JSON.stringify(fallback),
+        "Hard rules:",
+        "- Keep visualDirection to 3 or 4 short items.",
+        "- Keep shotPlan to 3 or 4 shots.",
+        "- Keep duration between 8 and 12 seconds.",
+        "- Full body must stay visible for the whole clip.",
+        `Request: ${JSON.stringify(request)}`,
+        `Fallback draft: ${JSON.stringify(fallback)}`,
+      ].join("\n\n"),
+    });
+
+    const parsed = JSON.parse(extractJsonObject(response.text ?? ""));
+    return sanitizeReferenceClip(parsed, { ...fallback, provider: "gemini" });
+  } catch (error) {
+    return {
+      ...fallback,
+      provider: "heuristic",
+      status: "prompt_ready",
+      error: error instanceof Error ? error.message : "Reference clip prompt generation failed.",
+    };
+  }
+}
+
 export const generateReferenceClip = actionGeneric({
   args: {
     request: referenceClipRequestValidator,
   },
   handler: async (_ctx, args) => {
     const request = args.request as ReferenceClipRequest;
-    const fallback = createReferenceClipDraft(request);
     const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
 
-    if (!apiKey) {
-      return fallback;
-    }
-
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          "You are preparing a Veo reference-clip generation package for a fitness coaching app.",
-          "Return JSON only.",
-          "Produce a concise shot plan and a Veo-ready prompt for an ideal-form reference video.",
-          "Use this exact shape:",
-          JSON.stringify(fallback),
-          "Hard rules:",
-          "- Keep visualDirection to 3 or 4 short items.",
-          "- Keep shotPlan to 3 or 4 shots.",
-          "- Keep duration between 8 and 12 seconds.",
-          "- Full body must stay visible for the whole clip.",
-          `Request: ${JSON.stringify(request)}`,
-          `Fallback draft: ${JSON.stringify(fallback)}`,
-        ].join("\n\n"),
-      });
-
-      const parsed = JSON.parse(extractJsonObject(response.text ?? ""));
-      return sanitizeReferenceClip(parsed, { ...fallback, provider: "gemini" });
-    } catch (error) {
-      return {
-        ...fallback,
-        provider: "heuristic",
-        status: "prompt_ready",
-        error: error instanceof Error ? error.message : "Reference clip prompt generation failed.",
-      };
-    }
+    return await buildReferenceClipPackage(request, apiKey);
   },
 });

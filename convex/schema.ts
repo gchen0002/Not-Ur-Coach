@@ -92,11 +92,13 @@ export default defineSchema({
     exercises: v.array(v.string()),
     muscles: v.array(v.string()),
     embedding: v.array(v.number()),
-  }).vectorIndex("by_embedding", {
-    vectorField: "embedding",
-    dimensions: 768,
-    filterFields: ["sourceType"],
-  }),
+  })
+    .index("by_source", ["source"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 768,
+      filterFields: ["sourceType"],
+    }),
 
   clipFrameEmbeddings: defineTable({
     clipId: v.id("clips"),
@@ -119,6 +121,12 @@ export default defineSchema({
     isAiGenerated: v.boolean(),
     requiredEquipment: v.array(v.id("equipment")),
     muscles: v.array(v.string()),
+    category: v.optional(v.string()),
+    summary: v.optional(v.string()),
+    defaultCameraAngle: v.optional(v.string()),
+    movementPattern: v.optional(v.string()),
+    biasSummary: v.optional(v.string()),
+    depthHeuristic: v.optional(v.any()),
     referenceClipStorageId: v.optional(v.id("_storage")),
   }).index("by_name", ["name"]),
 

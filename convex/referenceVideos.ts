@@ -24,6 +24,18 @@ export const getByExercise = queryGeneric({
   },
 });
 
+export const listAll = queryGeneric({
+  args: {},
+  handler: async (ctx) => {
+    const references = await ctx.db.query("referenceVideos").collect();
+
+    return await Promise.all(references.map(async (reference) => ({
+      ...reference,
+      storageUrl: reference.storageId ? await ctx.storage.getUrl(reference.storageId) : null,
+    })));
+  },
+});
+
 export const upsertReferenceVideo = mutationGeneric({
   args: {
     exercise: v.string(),

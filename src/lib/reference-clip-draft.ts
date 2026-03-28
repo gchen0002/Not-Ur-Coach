@@ -1,7 +1,29 @@
+import type { ExerciseCatalogEntry } from "./exercise-intake-contract";
 import type { ReferenceClipRequest, ReferenceClipResult } from "./reference-clip-contract";
 
 function joinList(items: string[]) {
   return items.length > 0 ? items.join(", ") : "bodyweight";
+}
+
+export function createReferenceClipRequestFromExercise(
+  exercise: Pick<ExerciseCatalogEntry, "name" | "muscles" | "equipment" | "defaultCameraAngle">,
+  options?: {
+    variant?: string;
+    modelOverride?: string;
+    notes?: string;
+  },
+): ReferenceClipRequest {
+  const primaryEquipment = exercise.equipment[0] ?? "Bodyweight";
+
+  return {
+    exercise: exercise.name,
+    muscles: exercise.muscles,
+    equipment: exercise.equipment.length > 0 ? exercise.equipment : ["Bodyweight"],
+    cameraAngle: exercise.defaultCameraAngle,
+    variant: options?.variant ?? `${primaryEquipment.toLowerCase()} demo`,
+    modelOverride: options?.modelOverride,
+    notes: options?.notes,
+  };
 }
 
 export function createReferenceClipDraft(request: ReferenceClipRequest): ReferenceClipResult {

@@ -7,6 +7,7 @@ import type {
   ReferenceVideoGenerationResult,
 } from "../src/lib/reference-clip-contract";
 import { createReferenceClipDraft } from "../src/lib/reference-clip-draft";
+import { buildReferenceClipPackage } from "./generateReferenceClip";
 
 const referenceClipRequestValidator = v.object({
   exercise: v.string(),
@@ -121,7 +122,7 @@ export const generateReferenceVideo = actionGeneric({
   },
   handler: async (ctx, args) => {
     const request = args.request as ReferenceClipRequest;
-    const promptPackage: ReferenceClipResult = createReferenceClipDraft(request);
+    const fallbackPromptPackage: ReferenceClipResult = createReferenceClipDraft(request);
     const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
 
     if (!apiKey) {
@@ -132,7 +133,7 @@ export const generateReferenceVideo = actionGeneric({
         operationName: null,
         videoUri: null,
         mimeType: null,
-        promptPackage,
+        promptPackage: fallbackPromptPackage,
         error: "Missing GEMINI_API_KEY or GOOGLE_API_KEY.",
       } satisfies ReferenceVideoGenerationResult;
     }
@@ -140,6 +141,7 @@ export const generateReferenceVideo = actionGeneric({
     const ai = new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
 
     try {
+      const promptPackage = await buildReferenceClipPackage(request, apiKey);
       const availableModels = await listAvailableVideoModels(ai);
       const model = resolvePreferredModel(availableModels, request.modelOverride);
 
@@ -220,7 +222,7 @@ export const generateReferenceVideo = actionGeneric({
         operationName: null,
         videoUri: null,
         mimeType: null,
-        promptPackage,
+        promptPackage: fallbackPromptPackage,
         error: error instanceof Error ? error.message : "Reference video generation failed.",
       } satisfies ReferenceVideoGenerationResult;
     }
