@@ -122,6 +122,19 @@ export default defineSchema({
     referenceClipStorageId: v.optional(v.id("_storage")),
   }).index("by_name", ["name"]),
 
+  referenceVideos: defineTable({
+    exercise: v.string(),
+    variant: v.string(),
+    cameraAngle: v.string(),
+    model: v.string(),
+    provider: v.string(),
+    storageId: v.optional(v.id("_storage")),
+    sourceUri: v.optional(v.string()),
+    promptPackage: v.any(),
+    status: v.string(),
+    error: v.optional(v.string()),
+  }).index("by_exercise", ["exercise"]),
+
   equipment: defineTable({
     name: v.string(),
     aliases: v.array(v.string()),

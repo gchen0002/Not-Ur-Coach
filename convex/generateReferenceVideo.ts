@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { actionGeneric } from "convex/server";
+import { actionGeneric, makeFunctionReference } from "convex/server";
 import { v } from "convex/values";
 import type {
   ReferenceClipRequest,
@@ -26,15 +26,100 @@ function pickVideoModel(modelOverride?: string) {
   return modelOverride || process.env.VEO_MODEL || "veo-2.0-generate-001";
 }
 
+async function listAvailableVideoModels(ai: GoogleGenAI) {
+  const response = await ai.models.list({}) as any;
+  const models = response.page ?? response.models ?? [];
+
+  return models
+    .filter((model: any) => Array.isArray(model.supportedActions) && model.supportedActions.includes("generateVideos"))
+    .map((model: any) => model.name as string);
+}
+
+function resolvePreferredModel(availableModels: string[], requestedModel?: string) {
+  if (requestedModel === "veo-3.1") {
+    const mapped = availableModels.find((name) => name === "veo-3.1-generate-preview")
+      || availableModels.find((name) => name.includes("veo-3.1-generate-preview"));
+
+    if (mapped) {
+      return mapped;
+    }
+  }
+
+  if (requestedModel && availableModels.includes(requestedModel)) {
+    return requestedModel;
+  }
+
+  const veo31Candidate = availableModels.find((name) => name.includes("veo-3.1"));
+  if (veo31Candidate) {
+    return veo31Candidate;
+  }
+
+  const veo3Candidate = availableModels.find((name) => name.includes("veo-3"));
+  if (veo3Candidate) {
+    return veo3Candidate;
+  }
+
+  if (requestedModel === "veo-3.1") {
+    return "veo-3.1-generate-preview";
+  }
+
+  return requestedModel || pickVideoModel();
+}
+
 function getGeneratedVideo(operation: any) {
   return operation?.response?.generatedVideos?.[0]?.video ?? null;
+}
+
+async function persistReferenceVideo(ctx: any, params: {
+  request: ReferenceClipRequest;
+  promptPackage: ReferenceClipResult;
+  model: string;
+  provider: "gemini" | "heuristic";
+  status: string;
+  videoUri?: string | null;
+  error?: string | null;
+  apiKey: string;
+}) {
+  let storageId: any = undefined;
+
+  if (params.videoUri) {
+    const response = await fetch(params.videoUri, {
+      headers: {
+        "x-goog-api-key": params.apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch generated video: ${response.status} ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+    storageId = await ctx.storage.store(blob);
+  }
+
+  const upsertRef = makeFunctionReference<"mutation", any, boolean>("referenceVideos:upsertReferenceVideo");
+  await ctx.runMutation(upsertRef, {
+    exercise: params.request.exercise,
+    variant: params.request.variant,
+    cameraAngle: params.request.cameraAngle,
+    model: params.model,
+    provider: params.provider,
+    storageId,
+    sourceUri: params.videoUri ?? undefined,
+    promptPackage: params.promptPackage,
+    status: params.status,
+    error: params.error ?? undefined,
+  });
+
+  const getRef = makeFunctionReference<"query", { exercise: string }, any>("referenceVideos:getByExercise");
+  return await ctx.runQuery(getRef, { exercise: params.request.exercise });
 }
 
 export const generateReferenceVideo = actionGeneric({
   args: {
     request: referenceClipRequestValidator,
   },
-  handler: async (_ctx, args) => {
+  handler: async (ctx, args) => {
     const request = args.request as ReferenceClipRequest;
     const promptPackage: ReferenceClipResult = createReferenceClipDraft(request);
     const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
@@ -53,9 +138,11 @@ export const generateReferenceVideo = actionGeneric({
     }
 
     const ai = new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
-    const model = pickVideoModel(request.modelOverride);
 
     try {
+      const availableModels = await listAvailableVideoModels(ai);
+      const model = resolvePreferredModel(availableModels, request.modelOverride);
+
       let operation = await ai.models.generateVideos({
         model,
         source: {
@@ -105,12 +192,22 @@ export const generateReferenceVideo = actionGeneric({
         } satisfies ReferenceVideoGenerationResult;
       }
 
+      const persisted = await persistReferenceVideo(ctx, {
+        request,
+        promptPackage,
+        model,
+        provider: "gemini",
+        status: "generated",
+        videoUri: generatedVideo.uri,
+        apiKey,
+      });
+
       return {
         provider: "gemini",
         status: "generated",
         model,
         operationName: operation.name ?? null,
-        videoUri: generatedVideo.uri,
+        videoUri: persisted?.storageUrl ?? generatedVideo.uri,
         mimeType: generatedVideo.mimeType ?? null,
         promptPackage,
         error: null,
@@ -119,7 +216,7 @@ export const generateReferenceVideo = actionGeneric({
       return {
         provider: "heuristic",
         status: "failed",
-        model,
+        model: pickVideoModel(request.modelOverride),
         operationName: null,
         videoUri: null,
         mimeType: null,

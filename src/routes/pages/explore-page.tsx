@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BookOpenIcon, MagnifyingGlassIcon, PlayCircleIcon, SparklesIcon } from "@heroicons/react/24/outline";
 import { useRouter } from "@tanstack/react-router";
 import { makeFunctionReference } from "convex/server";
@@ -31,6 +31,41 @@ export function ExplorePage() {
   const [referenceError, setReferenceError] = useState<string | null>(null);
   const [referenceResult, setReferenceResult] = useState<ReferenceVideoGenerationResult | null>(null);
 
+  useEffect(() => {
+    async function loadSavedReference() {
+      if (!convexClient) {
+        return;
+      }
+
+      try {
+        const referenceQuery = makeFunctionReference<"query", { exercise: string }, any>(
+          "referenceVideos:getByExercise",
+        );
+        const existing = await convexClient.query(referenceQuery, { exercise: "Squat" });
+
+        if (!existing) {
+          return;
+        }
+
+        setReferenceResult({
+          provider: existing.provider,
+          status: existing.status,
+          model: existing.model,
+          operationName: null,
+          videoUri: existing.storageUrl ?? existing.sourceUri ?? null,
+          mimeType: null,
+          promptPackage: existing.promptPackage,
+          error: existing.error ?? null,
+        });
+        setReferenceState(existing.status === "failed" ? "error" : "done");
+      } catch {
+        // keep Explore usable even if the lookup fails
+      }
+    }
+
+    void loadSavedReference();
+  }, [convexClient]);
+
   async function generateSquatReference() {
     setReferenceState("loading");
     setReferenceError(null);
@@ -41,7 +76,6 @@ export function ExplorePage() {
       equipment: ["Bodyweight"],
       cameraAngle: "sagittal",
       variant: "bodyweight demo",
-      modelOverride: "veo-3.1",
       notes:
         "Use the locked Not Ur Coach reference athlete style package with the same athlete, same background, same wardrobe, same lighting, and two ideal reps.",
     };
