@@ -6,9 +6,13 @@ type LiveCoachPanelProps = {
   prepState: "idle" | "loading" | "ready" | "error";
   prepError: string | null;
   context: LiveCoachContextResult | null;
+  exerciseOverride: string;
+  onExerciseOverrideChange: (value: string) => void;
   connectionState: "idle" | "connecting" | "connected" | "error";
   connectionError: string | null;
   transcript: Array<{ role: "assistant" | "system"; content: string }>;
+  autoSnapshotEnabled: boolean;
+  onToggleAutoSnapshots: () => void;
   onPrepare: () => Promise<void>;
   onConnect: () => Promise<void>;
   onDisconnect: () => void;
@@ -20,9 +24,13 @@ export function LiveCoachPanel({
   prepState,
   prepError,
   context,
+  exerciseOverride,
+  onExerciseOverrideChange,
   connectionState,
   connectionError,
   transcript,
+  autoSnapshotEnabled,
+  onToggleAutoSnapshots,
   onPrepare,
   onConnect,
   onDisconnect,
@@ -37,6 +45,34 @@ export function LiveCoachPanel({
       description="Infer the exercise first, hydrate DB-backed coaching guardrails, then open a tight Gemini Live session that works from snapshots and tiny delta packets."
     >
       <div className="space-y-4">
+        <div className="rounded-2xl bg-[var(--surface-2)] p-4">
+          <p className="text-sm font-medium text-[var(--ink)]">Exercise override</p>
+          <p className="mt-1 text-sm leading-6 text-[var(--ink-muted)]">
+            Leave blank to let Gemini infer the exercise from the startup frame. Fill this in when you want to force a specific lift.
+          </p>
+          <input
+            type="text"
+            value={exerciseOverride}
+            onChange={(event) => onExerciseOverrideChange(event.target.value)}
+            placeholder="Optional: SLDL, squat, RDL..."
+            className="mt-3 w-full rounded-2xl border border-[var(--outline)] bg-white px-4 py-3 text-sm text-[var(--ink)] outline-none transition focus:border-[var(--accent)]"
+          />
+          {context?.candidateExercises.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {context.candidateExercises.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => onExerciseOverrideChange(item)}
+                  className="rounded-full border border-[var(--outline)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--ink-secondary)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
@@ -80,7 +116,19 @@ export function LiveCoachPanel({
           >
             Send live snapshot
           </button>
+
+          <button
+            type="button"
+            onClick={onToggleAutoSnapshots}
+            className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)]"
+          >
+            {autoSnapshotEnabled ? "Auto snapshots on" : "Auto snapshots off"}
+          </button>
         </div>
+
+        <p className="text-xs uppercase tracking-[0.16em] text-[var(--ink-muted)]">
+          {autoSnapshotEnabled ? "Connected sessions send a fresh snapshot roughly every 2 seconds." : "Auto snapshots are paused; use manual snapshots only."}
+        </p>
 
         {prepError ? (
           <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">

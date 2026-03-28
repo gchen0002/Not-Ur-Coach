@@ -131,6 +131,8 @@ function createSeedChatMessage(result: AnalysisRunResult): ChatMessage {
 export function AnalyzePage() {
   const router = useRouter();
   const liveSessionRef = useRef<Session | null>(null);
+  const liveAutoSnapshotTimerRef = useRef<number | null>(null);
+  const liveSnapshotInFlightRef = useRef(false);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -185,6 +187,8 @@ export function AnalyzePage() {
   const [liveCoachConnectionState, setLiveCoachConnectionState] = useState<"idle" | "connecting" | "connected" | "error">("idle");
   const [liveCoachConnectionError, setLiveCoachConnectionError] = useState<string | null>(null);
   const [liveCoachTranscript, setLiveCoachTranscript] = useState<Array<{ role: "assistant" | "system"; content: string }>>([]);
+  const [liveExerciseOverride, setLiveExerciseOverride] = useState("");
+  const [liveAutoSnapshotEnabled, setLiveAutoSnapshotEnabled] = useState(true);
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
 
   const recordingSupported = typeof MediaRecorder !== "undefined";
@@ -239,6 +243,10 @@ export function AnalyzePage() {
 
       if (recordingTimerRef.current) {
         window.clearInterval(recordingTimerRef.current);
+      }
+      if (liveAutoSnapshotTimerRef.current) {
+        window.clearInterval(liveAutoSnapshotTimerRef.current);
+        liveAutoSnapshotTimerRef.current = null;
       }
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -367,6 +375,11 @@ export function AnalyzePage() {
     processingRef.current = false;
     liveSessionRef.current?.close();
     liveSessionRef.current = null;
+    if (liveAutoSnapshotTimerRef.current) {
+      window.clearInterval(liveAutoSnapshotTimerRef.current);
+      liveAutoSnapshotTimerRef.current = null;
+    }
+    liveSnapshotInFlightRef.current = false;
     setLastLandmarks([]);
     setVisibleLandmarks(0);
     setFramesProcessed(0);
@@ -386,6 +399,8 @@ export function AnalyzePage() {
     setLiveCoachConnectionState("idle");
     setLiveCoachConnectionError(null);
     setLiveCoachTranscript([]);
+    setLiveExerciseOverride("");
+    setLiveAutoSnapshotEnabled(true);
     setVideoAspectRatio(16 / 9);
   }
 
@@ -1088,7 +1103,7 @@ export function AnalyzePage() {
     const frame = await captureCurrentFrameImage();
     const snapshotPacket = buildLiveSnapshotPacket();
     const request: LiveCoachContextRequest = {
-      userHint: clipName ?? undefined,
+      userHint: liveExerciseOverride.trim() || clipName || undefined,
       frameDataUrls: [frame.dataUrl],
       phaseNotes: snapshotPacket.notes,
     };
@@ -1206,6 +1221,12 @@ export function AnalyzePage() {
       return;
     }
 
+    if (liveSnapshotInFlightRef.current) {
+      return;
+    }
+
+    liveSnapshotInFlightRef.current = true;
+
     try {
       const frame = await captureCurrentFrameImage();
       const snapshotPacket = buildLiveSnapshotPacket();
@@ -1221,8 +1242,36 @@ export function AnalyzePage() {
     } catch (error) {
       setLiveCoachConnectionState("error");
       setLiveCoachConnectionError(error instanceof Error ? error.message : "Failed to send a live coaching snapshot.");
+    } finally {
+      liveSnapshotInFlightRef.current = false;
     }
   }
+
+  useEffect(() => {
+    if (liveCoachConnectionState !== "connected" || !liveAutoSnapshotEnabled) {
+      if (liveAutoSnapshotTimerRef.current) {
+        window.clearInterval(liveAutoSnapshotTimerRef.current);
+        liveAutoSnapshotTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (liveAutoSnapshotTimerRef.current) {
+      window.clearInterval(liveAutoSnapshotTimerRef.current);
+    }
+
+    liveAutoSnapshotTimerRef.current = window.setInterval(() => {
+      void sendLiveSnapshot();
+    }, 2000);
+
+    return () => {
+      if (liveAutoSnapshotTimerRef.current) {
+        window.clearInterval(liveAutoSnapshotTimerRef.current);
+        liveAutoSnapshotTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveAutoSnapshotEnabled, liveCoachConnectionState]);
 
   async function captureFrame() {
     const video = videoRef.current;
@@ -1617,9 +1666,13 @@ export function AnalyzePage() {
         prepState={liveCoachPrepState}
         prepError={liveCoachPrepError}
         context={liveCoachContext}
+        exerciseOverride={liveExerciseOverride}
+        onExerciseOverrideChange={setLiveExerciseOverride}
         connectionState={liveCoachConnectionState}
         connectionError={liveCoachConnectionError}
         transcript={liveCoachTranscript}
+        autoSnapshotEnabled={liveAutoSnapshotEnabled}
+        onToggleAutoSnapshots={() => setLiveAutoSnapshotEnabled((current) => !current)}
         onPrepare={prepareLiveCoach}
         onConnect={connectLiveCoach}
         onDisconnect={disconnectLiveCoach}
