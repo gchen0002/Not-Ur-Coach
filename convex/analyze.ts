@@ -112,7 +112,7 @@ function sanitizeGeminiDraft(candidate: unknown, fallback: AnalysisDraft): Analy
           ? draft.basicAnalysis.summary.trim()
           : fallback.basicAnalysis.summary,
       whatYoureDoingWell: Array.isArray(draft.basicAnalysis.whatYoureDoingWell)
-        ? draft.basicAnalysis.whatYoureDoingWell.filter((item): item is string => typeof item === "string").slice(0, 3)
+        ? draft.basicAnalysis.whatYoureDoingWell.filter((item): item is string => typeof item === "string").slice(0, 4)
         : fallback.basicAnalysis.whatYoureDoingWell,
       whatToFix: Array.isArray(draft.basicAnalysis.whatToFix)
         ? draft.basicAnalysis.whatToFix.filter((item): item is string => typeof item === "string").slice(0, 3)
@@ -241,7 +241,7 @@ function buildFallbackBaseline(fallback: AnalysisDraft) {
     confidence: fallback.confidence,
     summary: fallback.summary,
     scores: fallback.scores,
-    whatYoureDoingWell: fallback.basicAnalysis.whatYoureDoingWell.slice(0, 3),
+    whatYoureDoingWell: fallback.basicAnalysis.whatYoureDoingWell.slice(0, 4),
     whatToFix: fallback.basicAnalysis.whatToFix.slice(0, 2),
     cues: fallback.cues.slice(0, 2),
     nextStep: fallback.nextStep,
@@ -256,6 +256,12 @@ function buildCompactAnalysisInput(
 
   return {
     exercise: payload.userContext.exerciseName ?? context.exercise?.name ?? clipName,
+    exerciseContext: {
+      summary: context.exercise?.summary ?? null,
+      evidenceLevel: context.exercise?.evidenceLevel ?? null,
+      defaultCameraAngle: context.exercise?.defaultCameraAngle ?? "unknown",
+      requiredEquipment: context.exercise?.requiredEquipment ?? [],
+    },
     targetMuscles: payload.userContext.targetMuscles.length > 0
       ? payload.userContext.targetMuscles
       : context.exercise?.muscles ?? [],
@@ -282,8 +288,100 @@ function buildCompactAnalysisInput(
       hipPatternNote: inferHipPatternNote(payload),
       kneePatternNote: inferKneePatternNote(payload),
     },
-    evidence: context.evidence.slice(0, 3),
+    evidence: context.evidence.slice(0, 5),
     recentHistory: [],
+  };
+}
+
+function isVerticalPullExercise(payload: AnalyzePayload, context: CompactContext) {
+  return /(lat|pulldown|pull-up|pull up|chin-up|chin up)/i.test([
+    payload.userContext.exerciseName ?? payload.clipName ?? "",
+    ...(payload.userContext.targetMuscles ?? []),
+    context.exercise?.name ?? "",
+    ...(context.exercise?.muscles ?? []),
+    context.exercise?.summary ?? "",
+  ].join(" "));
+}
+
+function mentionsCropPenalty(text: string) {
+  return /(camera|frame|cropp|off-screen|off screen|visibility|visible|clipp)/i.test(text);
+}
+
+function mentionsForcedStretchClaim(text: string) {
+  return /(full overhead stretch|overhead stretch|longer muscle lengths|full stretch at the top|stretch at the top|top-rom correction|top position correction)/i.test(text);
+}
+
+function normalizeVerticalPullDraft(
+  draft: AnalysisDraft,
+  payload: AnalyzePayload,
+  context: CompactContext,
+  fallback: AnalysisDraft,
+): AnalysisDraft {
+  if (!isVerticalPullExercise(payload, context)) {
+    return draft;
+  }
+
+  const cropLimited = inferOcclusionNotes(payload).length > 0 || [...payload.quality.currentIssues, ...payload.quality.windowIssues]
+    .some((issue) => /(camera|frame|cropp|off-screen|off screen|clip edge|visible)/i.test(issue));
+  const stableTorso = payload.motionSummary.trunkLean !== null && payload.motionSummary.trunkLean <= 12;
+  const onlyVisibilityIssues = [...payload.quality.currentIssues, ...payload.quality.windowIssues]
+    .every((issue) => /(camera|frame|cropp|off-screen|off screen|clip edge|visible|center)/i.test(issue));
+  const noRepTelemetry = payload.repStats.detectedRepCount === 0;
+
+  const normalizedWhatToFix = draft.basicAnalysis.whatToFix
+    .filter((item) => !mentionsForcedStretchClaim(item))
+    .filter((item) => !(cropLimited && mentionsCropPenalty(item)));
+
+  const normalizedCues = draft.cues
+    .filter((item) => !mentionsForcedStretchClaim(item.cue))
+    .filter((item) => !(cropLimited && mentionsCropPenalty(item.cue)));
+
+  if (cropLimited) {
+    normalizedWhatToFix.unshift("The top position is partly out of frame, so start-position assessment is limited.");
+    normalizedCues.unshift({
+      cue: "Keep the head and elbows visible at the start if you want a more specific top-position audit, but the visible pull itself already looks controlled.",
+      priority: "low",
+    });
+  }
+
+  if (normalizedWhatToFix.length === 0 && stableTorso) {
+    normalizedWhatToFix.push("No major visible technical fault stands out; the remaining limitation is partial top-position visibility.");
+  }
+
+  const normalizedSummary = cropLimited
+    ? draft.summary
+        .replace(/However, because you are partially off-screen, it is hard to see the full stretch at the top\.?/i, "The visible pull looks strong, but the overhead start is partly off-screen so the top position cannot be judged with full certainty.")
+        .replace(/hard to see the full stretch at the top/gi, "hard to verify the exact overhead start")
+    : draft.summary;
+
+  const normalizedNextStep = cropLimited
+    ? "Keep the same torso control and line of pull. If you want a more specific top-position check, capture the start with the head and elbows fully in frame."
+    : draft.nextStep;
+
+  const scoreFloor = cropLimited && onlyVisibilityIssues && stableTorso
+    ? Math.max(fallback.scores.overall ?? 0, noRepTelemetry ? 80 : 78)
+    : null;
+
+  return {
+    ...draft,
+    summary: normalizedSummary,
+    basicAnalysis: {
+      ...draft.basicAnalysis,
+      whatYoureDoingWell: Array.from(new Set(draft.basicAnalysis.whatYoureDoingWell)).slice(0, 4),
+      whatToFix: Array.from(new Set(normalizedWhatToFix)).slice(0, 2),
+    },
+    cues: Array.from(
+      new Map(normalizedCues.map((cue) => [cue.cue, cue])).values(),
+    ).slice(0, 3),
+    nextStep: normalizedNextStep,
+    scores: scoreFloor !== null
+      ? {
+          ...draft.scores,
+          overall: Math.max(draft.scores.overall ?? 0, scoreFloor),
+          rom: Math.max(draft.scores.rom ?? 0, fallback.scores.rom ?? 78),
+          tensionProfile: Math.max(draft.scores.tensionProfile ?? 0, fallback.scores.tensionProfile ?? 80),
+        }
+      : draft.scores,
   };
 }
 
@@ -293,7 +391,7 @@ type CompactContext = {
     muscles: string[];
     movementPattern: string | null;
     evidenceLevel: string;
-    defaultCameraAngle: string | null;
+    defaultCameraAngle: "sagittal" | "coronal" | "angled" | null;
     summary: string | null;
     resistanceType: "bodyweight" | "free_weight" | "machine" | "unknown";
     requiredEquipment: string[];
@@ -332,20 +430,27 @@ async function generateGeminiDraft(
     const upperBodyBias =
       context.exercise?.movementPattern === "upper"
       || /(row|pull|pulldown|curl|press|raise|bench|overhead)/i.test(compactInput.exercise);
+    const verticalPullBias = /(lat|pulldown|pull-up|pull up|chin-up|chin up)/i.test([
+      compactInput.exercise,
+      ...compactInput.targetMuscles,
+      compactInput.exerciseContext.summary ?? "",
+    ].join(" "));
     const repTelemetryLimited = upperBodyBias && cleanHighConfidenceClip && payload.repStats.detectedRepCount === 0;
     const compactRules = {
       scoring: [
         "Use provided evidence and app rules before generic fitness priors.",
+        "Treat the Convex research context and exercise summary as the primary standard for scoring and coaching.",
         "Treat MediaPipe as support data, not absolute truth, especially when occlusion is present.",
         "Lower confidence when the clip is cropped, partially hidden, or the movement goal is not fully visible.",
         "When clip confidence is high and visibility is clean, be appropriately generous rather than grading like a problem clip.",
         "If the clip is strong, lead with 2-3 specific things the athlete is doing well before giving a main fix.",
         "Missing rep segmentation alone is not a form fault; treat it as telemetry limitation unless the visible motion itself is unclear.",
         "For upper-body lifts, reward stable torso position, repeatable setup, and clean pull or press mechanics when supported by the visible data.",
+        "Never mark an unseen phase or cropped joint as incorrect; if it is not visible, call it unknown rather than wrong.",
       ],
       outputBudget: {
-        wellItemsMax: 3,
-        fixItemsMax: 3,
+        wellItemsMax: cleanHighConfidenceClip ? 4 : 3,
+        fixItemsMax: cleanHighConfidenceClip ? 2 : 3,
         cuesMax: 4,
         risksMax: 3,
       },
@@ -387,7 +492,7 @@ async function generateGeminiDraft(
       "Use exactly this shape and no additional keys:",
       JSON.stringify(responseShape),
       "Hard rules:",
-      "- Keep whatYoureDoingWell to 0-3 items.",
+      `- Keep whatYoureDoingWell to 0-${cleanHighConfidenceClip ? 4 : 3} items.`,
       "- Keep whatToFix to 0-3 items.",
       "- Keep cues to 0-4 items.",
       "- Keep risks to 0-3 items.",
@@ -396,6 +501,8 @@ async function generateGeminiDraft(
       "- If mode is best_effort, mention crop, occlusion, or visibility limits in summary or basicAnalysis.summary.",
       "- Do not invent unseen joints, phases, or target-muscle claims beyond the provided evidence.",
       "- Prefer short, direct coaching language.",
+      "- Use the research-backed Convex evidence below as the main reference point before generic lifting advice.",
+      "- If the visible clip looks strong, let the score and tone reflect that instead of defaulting to caution-heavy feedback.",
       cleanHighConfidenceClip
         ? "- This is a high-confidence, visually clean clip. Start from the assumption that execution is solid unless clear evidence shows otherwise."
         : "",
@@ -411,6 +518,20 @@ async function generateGeminiDraft(
       upperBodyBias
         ? "- If the visible mechanics look clean, include generous positive feedback in whatYoureDoingWell and keep the main fix modest."
         : "",
+      verticalPullBias
+        ? "- This is a vertical-pull pattern. Prioritize torso stability, ribcage control, shoulder position, elbow path, and visible line of pull. Do not prescribe a top-ROM correction unless the top position is clearly visible."
+        : "",
+      verticalPullBias
+        ? "- If the torso and working arm are visible and look controlled, do not over-penalize missing legs or off-screen lower body."
+        : "",
+      verticalPullBias
+        ? "- A partially cropped overhead start should lower confidence more than score. If the visible pull mechanics are strong, keep the overall score strong."
+        : "",
+      verticalPullBias
+        ? "- Do not claim the athlete needs a bigger overhead stretch or 'longer muscle lengths' unless the visible clip clearly shows a shortened start and the provided research context directly supports that claim."
+        : "",
+      `Research-backed exercise context from Convex DB: ${JSON.stringify(compactInput.exerciseContext)}`,
+      `Research-backed evidence from Convex DB: ${JSON.stringify(compactInput.evidence)}`,
       `Compact analysis input: ${JSON.stringify(compactInput)}`,
       `Live/analysis guardrails: ${JSON.stringify(context.guardrails)}`,
       `App rules: ${JSON.stringify(compactRules)}`,
@@ -432,7 +553,7 @@ async function generateGeminiDraft(
 
     return {
       provider: "gemini" as const,
-      draft: sanitizeGeminiDraft(parsed, fallback),
+      draft: normalizeVerticalPullDraft(sanitizeGeminiDraft(parsed, fallback), payload, context, fallback),
       error: null,
     };
   } catch (error) {

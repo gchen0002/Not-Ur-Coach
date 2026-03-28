@@ -133,6 +133,14 @@ export function evaluateFrameQuality(
     getLandmark(landmarks, POSE_LANDMARK_INDEX.leftShoulder),
     getLandmark(landmarks, POSE_LANDMARK_INDEX.rightShoulder),
   ];
+  const elbows = [
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftElbow),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightElbow),
+  ];
+  const wrists = [
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftWrist),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightWrist),
+  ];
   const hips = [
     getLandmark(landmarks, POSE_LANDMARK_INDEX.leftHip),
     getLandmark(landmarks, POSE_LANDMARK_INDEX.rightHip),
@@ -147,7 +155,21 @@ export function evaluateFrameQuality(
   ];
 
   const visibleShoulders = shoulders.filter((landmark) => isLandmarkVisible(landmark)).length;
+  const visibleElbows = elbows.filter((landmark) => isLandmarkVisible(landmark)).length;
+  const visibleWrists = wrists.filter((landmark) => isLandmarkVisible(landmark)).length;
   const visibleHips = hips.filter((landmark) => isLandmarkVisible(landmark)).length;
+  const leftUpperChainVisible = [
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftShoulder),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftElbow),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftWrist),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.leftHip),
+  ].every((landmark) => isLandmarkVisible(landmark));
+  const rightUpperChainVisible = [
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightShoulder),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightElbow),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightWrist),
+    getLandmark(landmarks, POSE_LANDMARK_INDEX.rightHip),
+  ].every((landmark) => isLandmarkVisible(landmark));
   const leftSideChainVisible = [
     getLandmark(landmarks, POSE_LANDMARK_INDEX.leftShoulder),
     getLandmark(landmarks, POSE_LANDMARK_INDEX.leftHip),
@@ -162,9 +184,15 @@ export function evaluateFrameQuality(
   ].every((landmark) => isLandmarkVisible(landmark));
   const lowerBodyVisible = [...knees, ...ankles].filter((landmark) => isLandmarkVisible(landmark)).length >= 3;
   const torsoVisible = visibleShoulders >= 1 && visibleHips >= 1;
-  const requiredForTracking = exerciseProfile.prefersSingleSide
-    ? torsoVisible && (leftSideChainVisible || rightSideChainVisible || lowerBodyVisible)
-    : visibleShoulders === 2 && visibleHips === 2;
+  const upperBodyVisible = torsoVisible && (leftUpperChainVisible || rightUpperChainVisible || (visibleElbows + visibleWrists) >= 2);
+  const minVisibleForLock = exerciseProfile.pattern === "upper" ? 8 : 10;
+  const minVisibleForReject = exerciseProfile.pattern === "upper" ? 6 : 8;
+  const minVisibleForFull = exerciseProfile.pattern === "upper" ? 12 : 16;
+  const requiredForTracking = exerciseProfile.pattern === "upper"
+    ? upperBodyVisible
+    : exerciseProfile.prefersSingleSide
+      ? torsoVisible && (leftSideChainVisible || rightSideChainVisible || lowerBodyVisible)
+      : visibleShoulders === 2 && visibleHips === 2;
   const visiblePoints = landmarks.filter((landmark) => isLandmarkVisible(landmark)).map((landmark) => ({
     x: landmark.x,
     y: landmark.y,
@@ -176,26 +204,30 @@ export function evaluateFrameQuality(
   const centered = visiblePoints.length > 0
     ? visiblePoints.every((point) => point.x >= 0.08 && point.x <= 0.92)
     : false;
-  const fullBodyVisible = exerciseProfile.prefersSingleSide
-    ? requiredForTracking && (leftSideChainVisible || rightSideChainVisible || lowerBodyVisible) && !clipped
-    : requiredForTracking && lowerBodyVisible && !clipped;
-  const severeCrop = clipped && !lowerBodyVisible;
+  const fullBodyVisible = exerciseProfile.pattern === "upper"
+    ? requiredForTracking && !clipped
+    : exerciseProfile.prefersSingleSide
+      ? requiredForTracking && (leftSideChainVisible || rightSideChainVisible || lowerBodyVisible) && !clipped
+      : requiredForTracking && lowerBodyVisible && !clipped;
+  const severeCrop = clipped && (exerciseProfile.pattern === "upper" ? !upperBodyVisible : !lowerBodyVisible);
   const issues: string[] = [];
 
   let analysisReadiness: PoseFrameQuality["analysisReadiness"] = "full";
   let analysisReason = "Enough body visibility for standard scoring and Gemini analysis.";
 
-  if (visibleLandmarks < 10) {
+  if (visibleLandmarks < minVisibleForLock) {
     issues.push("Need a clearer pose lock.");
   }
 
   if (!requiredForTracking) {
-      issues.push(exerciseProfile.prefersSingleSide
+    issues.push(exerciseProfile.pattern === "upper"
+      ? "Keep the shoulders, torso, and at least one working arm visible, even if the legs are cropped."
+      : exerciseProfile.prefersSingleSide
         ? "Keep one shoulder-to-ankle side chain visible, even if the face is cropped."
         : "Keep shoulders and hips visible, even if the face is cropped.");
   }
 
-  if (!lowerBodyVisible) {
+  if (exerciseProfile.pattern !== "upper" && !lowerBodyVisible) {
     issues.push(exerciseProfile.pattern === "hinge"
       ? "Step back until one full shoulder-to-ankle side stays visible through the hinge."
       : "Step back until knees and ankles stay in frame.");
@@ -209,26 +241,30 @@ export function evaluateFrameQuality(
     issues.push("Center your body in the preview.");
   }
 
-  if (visibleLandmarks < 8 || !requiredForTracking || severeCrop) {
+  if (visibleLandmarks < minVisibleForReject || !requiredForTracking || severeCrop) {
     analysisReadiness = "reject";
     analysisReason =
-      exerciseProfile.pattern === "hinge"
+      exerciseProfile.pattern === "upper"
+        ? "Too much of the torso or working arm is missing for a trustworthy upper-body analysis."
+        : exerciseProfile.pattern === "hinge"
         ? "Too much of the main shoulder-hip-knee-ankle chain is missing for a trustworthy hinge analysis."
         : "Too much of the torso or lower body is missing for a trustworthy analysis.";
-  } else if (!fullBodyVisible || visibleLandmarks < 16 || !centered) {
+  } else if (!fullBodyVisible || visibleLandmarks < minVisibleForFull || !centered) {
     analysisReadiness = "best_effort";
     analysisReason =
       "Usable for a best-effort Gemini read, but expect lower confidence because the clip is cropped or partially occluded.";
   }
 
-  if (!requiredForTracking || visibleLandmarks < 10) {
+  if (!requiredForTracking || visibleLandmarks < minVisibleForLock) {
     return {
       readiness: "blocked",
       analysisReadiness,
       analysisReason,
-      guidance: exerciseProfile.prefersSingleSide
-        ? "Move into better light and keep one full shoulder-to-ankle side chain visible so the pose tracker can lock on."
-        : "Move into better light and keep shoulders, hips, and legs visible so the pose tracker can lock on.",
+      guidance: exerciseProfile.pattern === "upper"
+        ? "Move into better light and keep the torso plus one full working arm visible so the pose tracker can lock on."
+        : exerciseProfile.prefersSingleSide
+          ? "Move into better light and keep one full shoulder-to-ankle side chain visible so the pose tracker can lock on."
+          : "Move into better light and keep shoulders, hips, and legs visible so the pose tracker can lock on.",
       issues,
       visibleLandmarks,
       fullBodyVisible,
@@ -242,9 +278,11 @@ export function evaluateFrameQuality(
       readiness: "adjusting",
       analysisReadiness,
       analysisReason,
-      guidance: exerciseProfile.pattern === "hinge"
-        ? "You are close. Step back slightly and keep the main shoulder-to-ankle side chain visible through the full hinge."
-        : "You are close. Step back slightly and keep shoulders through feet inside the frame.",
+      guidance: exerciseProfile.pattern === "upper"
+        ? "You are close. Keep the torso and working arm inside the frame and avoid clipping the elbows or wrists."
+        : exerciseProfile.pattern === "hinge"
+          ? "You are close. Step back slightly and keep the main shoulder-to-ankle side chain visible through the full hinge."
+          : "You are close. Step back slightly and keep shoulders through feet inside the frame.",
       issues,
       visibleLandmarks,
       fullBodyVisible,

@@ -128,6 +128,12 @@ export type CompactAnalysisEvidence = {
 
 export type CompactAnalysisInput = {
   exercise: string;
+  exerciseContext: {
+    summary: string | null;
+    evidenceLevel: string | null;
+    defaultCameraAngle: "sagittal" | "coronal" | "angled" | "unknown";
+    requiredEquipment: string[];
+  };
   targetMuscles: string[];
   sessionIntent: "form_check" | "work_set" | "demo";
   resistanceType: "bodyweight" | "free_weight" | "machine" | "unknown";

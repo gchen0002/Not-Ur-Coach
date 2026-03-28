@@ -103,7 +103,7 @@ export const resolveCompactContext = queryGeneric({
       })
       .filter((item) => item.score > 0 && item.chunk.text)
       .sort((left, right) => right.score - left.score)
-      .slice(0, 3)
+      .slice(0, 5)
       .map((item, index) => ({
         tier: index === 0 ? "exercise" as const : item.chunk.exercises?.length ? "movement_family" as const : "heuristic" as const,
         finding: truncateSentence(item.chunk.text ?? "", 220),
