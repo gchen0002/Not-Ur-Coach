@@ -34,9 +34,117 @@ function getPriorityStyle(priority: "high" | "medium" | "low") {
 type AnalysisResultsPanelProps = {
   result: AnalysisRunResult;
   isPreview: boolean;
+  viewMode: "normal" | "sbl_nerd";
 };
 
-export function AnalysisResultsPanel({ result, isPreview }: AnalysisResultsPanelProps) {
+export function AnalysisResultsPanel({ result, isPreview, viewMode }: AnalysisResultsPanelProps) {
+  const topPositives = result.draft.basicAnalysis.whatYoureDoingWell.slice(0, viewMode === "normal" ? 2 : 3);
+  const topFixes = result.draft.basicAnalysis.whatToFix.slice(0, viewMode === "normal" ? 2 : 3);
+  const topCues = result.draft.cues.slice(0, viewMode === "normal" ? 1 : result.draft.cues.length);
+
+  if (viewMode === "normal") {
+    return (
+      <div className="space-y-5">
+        <div className="rounded-[28px] bg-gradient-to-br from-[#0f172a] to-[#1e293b] p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={cn("inline-flex rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-wider", getProviderStyle(result.provider))}>
+                  {isPreview ? "Local preview" : getProviderLabel(result.provider)}
+                </span>
+                <span className="inline-flex rounded-full bg-white/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/70">
+                  Normal mode
+                </span>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.2em] text-white/40">Overall score</p>
+                <p className="mt-2 text-5xl font-light tabular-nums text-white">{formatScore(result.draft.scores.overall)}</p>
+              </div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {[
+                ["Confidence", result.confidence],
+                ["Reps", String(result.payload.repStats.detectedRepCount)],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-xl bg-white/[0.08] px-4 py-2.5">
+                  <p className="text-[10px] uppercase tracking-wider text-white/40">{label}</p>
+                  <p className="mt-0.5 text-sm font-medium text-white">{value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <p className="mt-5 max-w-2xl text-sm leading-relaxed text-white/70">
+            {result.draft.basicAnalysis.summary || result.summary}
+          </p>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/50 p-5">
+            <div className="flex items-center gap-2">
+              <CheckCircleIcon className="h-5 w-5 text-emerald-600" />
+              <h3 className="text-sm font-medium text-emerald-800">What looks good</h3>
+            </div>
+            <ul className="mt-3 space-y-2">
+              {topPositives.length > 0 ? topPositives.map((item) => (
+                <li key={item} className="flex items-start gap-2.5 text-sm leading-relaxed text-emerald-900">
+                  <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+                  {item}
+                </li>
+              )) : (
+                <li className="text-sm text-emerald-700/60">No strong positives detected yet.</li>
+              )}
+            </ul>
+          </div>
+
+          <div className="rounded-2xl border border-amber-100 bg-amber-50/50 p-5">
+            <div className="flex items-center gap-2">
+              <ExclamationTriangleIcon className="h-5 w-5 text-amber-600" />
+              <h3 className="text-sm font-medium text-amber-800">Main fix</h3>
+            </div>
+            <ul className="mt-3 space-y-2">
+              {topFixes.length > 0 ? topFixes.map((item) => (
+                <li key={item} className="flex items-start gap-2.5 text-sm leading-relaxed text-amber-900">
+                  <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+                  {item}
+                </li>
+              )) : (
+                <li className="text-sm text-amber-700/60">No major fixes called out yet.</li>
+              )}
+            </ul>
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+            <div className="flex items-center gap-2">
+              <LightBulbIcon className="h-5 w-5 text-[var(--accent)]" />
+              <h3 className="text-sm font-medium text-[var(--ink)]">Best cue</h3>
+            </div>
+            <div className="mt-4 space-y-2">
+              {topCues.length > 0 ? topCues.map((cue) => (
+                <div key={cue.cue} className="rounded-xl bg-[var(--surface-2)] px-4 py-3">
+                  <p className="text-sm text-[var(--ink)]">{cue.cue}</p>
+                </div>
+              )) : (
+                <div className="rounded-xl bg-[var(--surface-2)] px-4 py-3 text-sm text-[var(--ink-muted)]">No cue generated yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-[var(--accent-light)] p-5">
+            <h3 className="text-sm font-medium text-[var(--accent)]">Next step</h3>
+            <p className="mt-3 text-sm leading-relaxed text-[var(--ink)]">{result.nextStep}</p>
+            {result.geminiError ? (
+              <p className="mt-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+                Gemini fallback: {result.geminiError}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       {/* ─── Score hero ─── */}
@@ -96,7 +204,7 @@ export function AnalysisResultsPanel({ result, isPreview }: AnalysisResultsPanel
           <p className="mt-3 text-sm leading-relaxed text-emerald-900/70">{result.draft.basicAnalysis.summary}</p>
           <ul className="mt-3 space-y-2">
             {result.draft.basicAnalysis.whatYoureDoingWell.length > 0 ? (
-              result.draft.basicAnalysis.whatYoureDoingWell.map((item) => (
+              topPositives.map((item) => (
                 <li key={item} className="flex items-start gap-2.5 text-sm leading-relaxed text-emerald-900">
                   <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
                   {item}
@@ -115,7 +223,7 @@ export function AnalysisResultsPanel({ result, isPreview }: AnalysisResultsPanel
           </div>
           <ul className="mt-3 space-y-2">
             {result.draft.basicAnalysis.whatToFix.length > 0 ? (
-              result.draft.basicAnalysis.whatToFix.map((item) => (
+              topFixes.map((item) => (
                 <li key={item} className="flex items-start gap-2.5 text-sm leading-relaxed text-amber-900">
                   <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
                   {item}
@@ -136,7 +244,7 @@ export function AnalysisResultsPanel({ result, isPreview }: AnalysisResultsPanel
         </div>
         <div className="mt-4 space-y-2">
           {result.draft.cues.length > 0 ? (
-            result.draft.cues.map((cue) => (
+            topCues.map((cue) => (
               <div key={cue.cue} className="flex items-center justify-between gap-4 rounded-xl bg-[var(--surface-2)] px-4 py-3">
                 <p className="text-sm text-[var(--ink)]">{cue.cue}</p>
                 <span className={cn("shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider", getPriorityStyle(cue.priority))}>

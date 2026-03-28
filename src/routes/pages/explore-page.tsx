@@ -30,6 +30,17 @@ function normalizeName(value: string) {
   return value.trim().toLowerCase();
 }
 
+function createRequestKey(value: string) {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(index);
+    hash |= 0;
+  }
+
+  return `${Math.abs(hash)}`;
+}
+
 function dedupeExercises(exercises: ExerciseCatalogEntry[]) {
   const map = new Map<string, ExerciseCatalogEntry>();
 
@@ -88,6 +99,8 @@ function readFileAsDataUrl(file: File) {
 export function ExplorePage() {
   const router = useRouter();
   const equipmentPhotoInputRef = useRef<HTMLInputElement | null>(null);
+  const exerciseIntakeCacheRef = useRef(new Map<string, ExerciseIntakeResult>());
+  const equipmentDetectionCacheRef = useRef(new Map<string, EquipmentDetectionResult>());
   const convexClient = router.options.context.convexClient;
   const [searchValue, setSearchValue] = useState("");
   const [selectedGroup, setSelectedGroup] = useState("All");
@@ -169,6 +182,12 @@ export function ExplorePage() {
 
   async function generateReferenceForRequest(exerciseName: string, request: ReferenceClipRequest) {
     const key = normalizeName(exerciseName);
+    const currentResult = referenceResults[key];
+
+    if (currentResult?.status === "generated" && currentResult.videoUri) {
+      return currentResult;
+    }
+
     setReferenceStates((current) => ({ ...current, [key]: "loading" }));
     setReferenceErrors((current) => ({ ...current, [key]: null }));
 
@@ -200,8 +219,21 @@ export function ExplorePage() {
 
   async function handleExerciseIntake() {
     const description = exerciseDescription.trim();
+    const cacheKey = createRequestKey(description.toLowerCase());
 
     if (!description) {
+      return;
+    }
+
+    const cached = exerciseIntakeCacheRef.current.get(cacheKey);
+    if (cached) {
+      setExerciseIntakeResult(cached);
+      setExerciseIntakeState(cached.status === "unclear" ? "error" : "done");
+
+      if (cached.generatedExercise) {
+        setCatalogExercises((current) => dedupeExercises([...current, cached.generatedExercise!]));
+      }
+
       return;
     }
 
@@ -220,17 +252,15 @@ export function ExplorePage() {
           { request: { description } },
         );
 
+      exerciseIntakeCacheRef.current.set(cacheKey, result);
       setExerciseIntakeResult(result);
       setExerciseIntakeState(result.status === "unclear" ? "error" : "done");
 
       if (result.generatedExercise) {
         setCatalogExercises((current) => dedupeExercises([...current, result.generatedExercise!]));
       }
-
-      if (result.referenceRequest) {
-        await generateReferenceForRequest(result.referenceRequest.exercise, result.referenceRequest);
-      }
     } catch {
+      exerciseIntakeCacheRef.current.set(cacheKey, localResult);
       setExerciseIntakeResult(localResult);
       setExerciseIntakeState(localResult.status === "unclear" ? "error" : "done");
 
@@ -268,6 +298,15 @@ export function ExplorePage() {
       return;
     }
 
+    const cacheKey = createRequestKey(`${equipmentPhotoDataUrl}:${equipmentPhotoNotes.trim().toLowerCase()}`);
+    const cached = equipmentDetectionCacheRef.current.get(cacheKey);
+
+    if (cached) {
+      setEquipmentDetectionResult(cached);
+      setEquipmentDetectionState(cached.error ? "error" : "done");
+      return;
+    }
+
     setEquipmentDetectionState("loading");
     setEquipmentDetectionResult(null);
 
@@ -286,6 +325,7 @@ export function ExplorePage() {
         },
       });
 
+      equipmentDetectionCacheRef.current.set(cacheKey, result);
       setEquipmentDetectionResult(result);
       setEquipmentDetectionState(result.error ? "error" : "done");
     } catch (error) {
@@ -324,7 +364,7 @@ export function ExplorePage() {
           <h1 className="text-2xl font-normal text-[var(--ink)]">Exercise Library</h1>
         </div>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--ink-secondary)]">
-          Browse the seeded catalog, generate reference videos for any card, and turn unknown movements into saved AI-generated exercises with their own Block 10 clip pipeline.
+          Browse the seeded catalog, generate reference videos only when you ask for them, and turn unknown movements into saved AI-generated exercises that are ready for a manual reference pass.
         </p>
       </div>
 
@@ -463,7 +503,7 @@ export function ExplorePage() {
             <div>
               <p className="text-sm font-medium text-[var(--ink)]">Describe an exercise</p>
               <p className="mt-1 text-sm leading-6 text-[var(--ink-muted)]">
-                The app checks the seeded catalog first. If the movement is new, it saves an AI-generated exercise draft and kicks off a reference clip request right away.
+                The app checks the seeded catalog first. If the movement is new, it saves an AI-generated exercise draft. Reference video generation stays manual from the exercise card.
               </p>
             </div>
             <SparklesIcon className="h-5 w-5 shrink-0 text-[var(--accent)]" />
@@ -503,7 +543,7 @@ export function ExplorePage() {
 
                 {exerciseIntakeResult.status === "generated" && exerciseIntakeResult.generatedExercise ? (
                   <div className="space-y-2">
-                    <p className="font-medium text-[var(--ink)]">Saved as an AI-generated exercise and queued for a reference clip.</p>
+                    <p className="font-medium text-[var(--ink)]">Saved as an AI-generated exercise draft.</p>
                     <p>
                       Draft: <span className="font-medium text-[var(--accent)]">{exerciseIntakeResult.generatedExercise.name}</span>
                     </p>
@@ -511,6 +551,7 @@ export function ExplorePage() {
                     <p className="text-xs uppercase tracking-wider text-[var(--ink-muted)]">
                       {exerciseIntakeResult.generatedExercise.equipment.join(" • ")} | {exerciseIntakeResult.generatedExercise.defaultCameraAngle}
                     </p>
+                    <p className="text-xs text-[var(--ink-muted)]">Generate the reference clip manually from the new exercise card if you want one.</p>
                   </div>
                 ) : null}
 

@@ -40,6 +40,7 @@ import { evaluateFrameQuality, summarizePoseWindow, type PoseLandmarkPoint } fro
 
 const SAMPLE_INTERVAL_MS = 200;
 const MAX_BUFFERED_FRAMES = 30;
+const MIN_AUTO_ANALYZE_FRAMES = 12;
 
 function getSupportedRecordingMimeType() {
   if (typeof MediaRecorder === "undefined") {
@@ -130,6 +131,7 @@ function createSeedChatMessage(result: AnalysisRunResult): ChatMessage {
 
 export function AnalyzePage() {
   const router = useRouter();
+  const clipAutoAnalyzePendingRef = useRef(false);
   const liveSessionRef = useRef<Session | null>(null);
   const liveAutoSnapshotTimerRef = useRef<number | null>(null);
   const liveSnapshotInFlightRef = useRef(false);
@@ -171,6 +173,7 @@ export function AnalyzePage() {
   const [analysisState, setAnalysisState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisRunResult | null>(null);
+  const [analysisViewMode, setAnalysisViewMode] = useState<"normal" | "sbl_nerd">("normal");
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistoryEntry[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatState, setChatState] = useState<"idle" | "running" | "error">("idle");
@@ -191,7 +194,7 @@ export function AnalyzePage() {
   const [liveCoachConnectionError, setLiveCoachConnectionError] = useState<string | null>(null);
   const [liveCoachTranscript, setLiveCoachTranscript] = useState<Array<{ role: "assistant" | "system" | "user"; content: string }>>([]);
   const [liveExerciseOverride, setLiveExerciseOverride] = useState("");
-  const [liveAutoSnapshotEnabled, setLiveAutoSnapshotEnabled] = useState(true);
+  const [liveAutoSnapshotEnabled, setLiveAutoSnapshotEnabled] = useState(false);
   const [liveMicState, setLiveMicState] = useState<"idle" | "requesting" | "live" | "error">("idle");
   const [liveMicError, setLiveMicError] = useState<string | null>(null);
   const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
@@ -381,6 +384,7 @@ export function AnalyzePage() {
   }, [cameraAngle.label, cameraState, frameQuality.analysisReadiness, frameQuality.guidance, frameQuality.readiness, lastLandmarks.length, pipelineError, pipelineState, sourceType]);
 
   function resetPoseState() {
+    clipAutoAnalyzePendingRef.current = false;
     processingRef.current = false;
     liveMicRecorderRef.current?.stop();
     liveMicRecorderRef.current = null;
@@ -413,7 +417,7 @@ export function AnalyzePage() {
     setLiveCoachConnectionError(null);
     setLiveCoachTranscript([]);
     setLiveExerciseOverride("");
-    setLiveAutoSnapshotEnabled(true);
+    setLiveAutoSnapshotEnabled(false);
     setLiveMicState("idle");
     setLiveMicError(null);
     setVideoAspectRatio(16 / 9);
@@ -627,7 +631,7 @@ export function AnalyzePage() {
       setClipState("loading");
       setRecordingState("idle");
       setPipelineError(null);
-      setStatusMessage("Loading training clip...");
+      setStatusMessage("Loading training clip and preparing auto-analysis...");
 
       const nextClipUrl = URL.createObjectURL(file);
       clipUrlRef.current = nextClipUrl;
@@ -642,11 +646,12 @@ export function AnalyzePage() {
       videoRef.current.playsInline = true;
       await waitForVideoReadiness(videoRef.current, file.name);
       await videoRef.current.play();
+      clipAutoAnalyzePendingRef.current = true;
 
       setClipState("playing");
 
       if (pipelineState === "ready") {
-        startSampling("Training clip loaded. Sampling frames at 5 FPS.");
+        startSampling("Training clip loaded. Sampling frames at 5 FPS, then analysis will run automatically.");
       } else if (pipelineState !== "error") {
         setStatusMessage("Training clip loaded. Waiting for MediaPipe initialization to finish.");
       }
@@ -1458,6 +1463,23 @@ export function AnalyzePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraState, clipState, pipelineState, sourceType]);
 
+  useEffect(() => {
+    const shouldAutoAnalyze =
+      sourceType === "clip" &&
+      clipAutoAnalyzePendingRef.current &&
+      analysisState === "idle" &&
+      bufferedFrames.length > 0 &&
+      (bufferedFrames.length >= MIN_AUTO_ANALYZE_FRAMES || clipState === "ended");
+
+    if (!shouldAutoAnalyze) {
+      return;
+    }
+
+    clipAutoAnalyzePendingRef.current = false;
+    void runAnalysis();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisState, bufferedFrames.length, clipState, sourceType]);
+
   const readinessTone =
     frameQuality.readiness === "ready"
       ? "bg-emerald-50 text-emerald-700"
@@ -1709,7 +1731,38 @@ export function AnalyzePage() {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-4 py-4 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
+        <div>
+          <p className="text-sm font-medium text-[var(--ink)]">Analysis mode</p>
+          <p className="mt-1 text-sm text-[var(--ink-muted)]">
+            Normal keeps the coaching simple. SBL Nerd shows the deeper breakdown.
+          </p>
+        </div>
+        <div className="inline-flex rounded-full border border-[var(--outline)] bg-[var(--surface-2)] p-1">
+          {[
+            ["normal", "Normal"],
+            ["sbl_nerd", "SBL Nerd"],
+          ].map(([value, label]) => {
+            const active = analysisViewMode === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setAnalysisViewMode(value as "normal" | "sbl_nerd")}
+                className={active
+                  ? "rounded-full bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white shadow-sm"
+                  : "rounded-full px-4 py-2 text-sm font-medium text-[var(--ink-secondary)] transition hover:text-[var(--accent)]"
+                }
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* ─── Angles + Reps ─── */}
+      {analysisViewMode === "sbl_nerd" ? (
       <div className="grid gap-5 lg:grid-cols-2">
         <div className="rounded-2xl bg-white p-5 shadow-[var(--shadow-sm)] ring-1 ring-[var(--outline)]">
           <h3 className="text-sm font-medium text-[var(--ink)]">Live joint reads</h3>
@@ -1755,9 +1808,10 @@ export function AnalyzePage() {
           </div>
         </div>
       </div>
+      ) : null}
 
       {/* ─── Analysis results ─── */}
-      <AnalysisResultsPanel result={analysisPreview} isPreview={!analysisResult} />
+      <AnalysisResultsPanel result={analysisPreview} isPreview={!analysisResult} viewMode={analysisViewMode} />
 
       <TtsPanel
         canSpeak={Boolean(analysisResult)}
@@ -1825,6 +1879,7 @@ export function AnalyzePage() {
       </div>
 
       {/* ─── Debug panels ─── */}
+      {analysisViewMode === "sbl_nerd" ? (
       <details className="group">
         <summary className="cursor-pointer text-sm font-medium text-[var(--ink-muted)] transition hover:text-[var(--ink)]">
           Debug panels
@@ -1886,6 +1941,7 @@ export function AnalyzePage() {
           </div>
         </div>
       </details>
+      ) : null}
 
       {/* ─── Mobile bottom bar ─── */}
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--outline)] bg-white/95 px-4 py-3 backdrop-blur-xl lg:hidden">

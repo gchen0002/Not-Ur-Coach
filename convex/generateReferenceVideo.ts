@@ -7,7 +7,6 @@ import type {
   ReferenceVideoGenerationResult,
 } from "../src/lib/reference-clip-contract";
 import { createReferenceClipDraft } from "../src/lib/reference-clip-draft";
-import { buildReferenceClipPackage } from "./generateReferenceClip";
 
 type VideoModelListItem = {
   name: string;
@@ -35,8 +34,24 @@ type VideoOperation = {
 };
 
 type PersistedReferenceRecord = {
+  exercise: string;
+  provider: string;
+  status: string;
+  model: string;
   storageUrl: string | null;
+  sourceUri?: string | null;
+  promptPackage: ReferenceClipResult;
+  error?: string | null;
 };
+
+const VIDEO_MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
+const VIDEO_POLL_INTERVAL_MS = 15000;
+const VIDEO_POLL_ATTEMPTS = 10;
+
+let cachedVideoModels: {
+  expiresAt: number;
+  names: string[];
+} | null = null;
 
 const referenceClipRequestValidator = v.object({
   exercise: v.string(),
@@ -57,12 +72,23 @@ function pickVideoModel(modelOverride?: string) {
 }
 
 async function listAvailableVideoModels(ai: GoogleGenAI) {
+  if (cachedVideoModels && cachedVideoModels.expiresAt > Date.now()) {
+    return cachedVideoModels.names;
+  }
+
   const response = await ai.models.list({}) as ModelListResponse;
   const models = response.page ?? response.models ?? [];
 
-  return models
+  const names = models
     .filter((model) => Array.isArray(model.supportedActions) && model.supportedActions.includes("generateVideos"))
     .map((model) => model.name);
+
+  cachedVideoModels = {
+    expiresAt: Date.now() + VIDEO_MODEL_CACHE_TTL_MS,
+    names,
+  };
+
+  return names;
 }
 
 function resolvePreferredModel(availableModels: string[], requestedModel?: string) {
@@ -108,6 +134,23 @@ export const generateReferenceVideo = actionGeneric({
     const request = args.request as ReferenceClipRequest;
     const fallbackPromptPackage: ReferenceClipResult = createReferenceClipDraft(request);
     const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+    const getRef = makeFunctionReference<"query", { exercise: string }, PersistedReferenceRecord | null>(
+      "referenceVideos:getByExercise",
+    );
+    const existing = await ctx.runQuery(getRef, { exercise: request.exercise });
+
+    if (existing?.status === "generated" && (existing.storageUrl || existing.sourceUri)) {
+      return {
+        provider: existing.provider === "gemini" ? "gemini" : "heuristic",
+        status: "generated",
+        model: existing.model,
+        operationName: null,
+        videoUri: existing.storageUrl ?? existing.sourceUri ?? null,
+        mimeType: null,
+        promptPackage: existing.promptPackage,
+        error: existing.error ?? null,
+      } satisfies ReferenceVideoGenerationResult;
+    }
 
     if (!apiKey) {
       return {
@@ -125,7 +168,7 @@ export const generateReferenceVideo = actionGeneric({
     const ai = new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
 
     try {
-      const promptPackage = await buildReferenceClipPackage(request, apiKey);
+      const promptPackage = fallbackPromptPackage;
       const availableModels = await listAvailableVideoModels(ai);
       const model = resolvePreferredModel(availableModels, request.modelOverride);
 
@@ -141,12 +184,12 @@ export const generateReferenceVideo = actionGeneric({
         },
       });
 
-      for (let attempt = 0; attempt < 18; attempt += 1) {
+      for (let attempt = 0; attempt < VIDEO_POLL_ATTEMPTS; attempt += 1) {
         if (operation.done) {
           break;
         }
 
-        await sleep(10000);
+        await sleep(VIDEO_POLL_INTERVAL_MS);
         operation = await ai.operations.getVideosOperation({ operation });
       }
 
@@ -214,9 +257,6 @@ export const generateReferenceVideo = actionGeneric({
         status: "generated",
       });
 
-      const getRef = makeFunctionReference<"query", { exercise: string }, PersistedReferenceRecord | null>(
-        "referenceVideos:getByExercise",
-      );
       const persisted = await ctx.runQuery(getRef, { exercise: request.exercise });
 
       return {
