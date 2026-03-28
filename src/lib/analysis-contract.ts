@@ -98,6 +98,57 @@ export type AnalysisRunResult = {
   payload: AnalyzePayload;
 };
 
+export type CompactAnalysisEvidence = {
+  tier: "exercise" | "movement_family" | "heuristic";
+  finding: string;
+  source: string;
+};
+
+export type CompactAnalysisInput = {
+  exercise: string;
+  targetMuscles: string[];
+  sessionIntent: "form_check" | "work_set" | "demo";
+  resistanceType: "bodyweight" | "free_weight" | "machine" | "unknown";
+  cameraAngle: "sagittal" | "coronal" | "angled" | "unknown";
+  clipQuality: {
+    confidence: AnalyzeConfidence;
+    visibleJointConfidence: AnalyzeConfidence;
+    issues: string[];
+    occlusionNotes: string[];
+  };
+  repSummary: {
+    repCount: number | null;
+    avgRepDurationMs: number | null;
+    phaseNotes: string[];
+  };
+  poseSummary: {
+    dominantSide: "left" | "right" | null;
+    trunkLean: number | null;
+    hipPatternNote: string | null;
+    kneePatternNote: string | null;
+  };
+  evidence: CompactAnalysisEvidence[];
+  recentHistory: Array<{
+    summary: string;
+    overallScore?: number | null;
+  }>;
+};
+
+export type LivePromptBudget = {
+  sessionOpenContext: {
+    exercise: string;
+    targetMuscles: string[];
+    coachingStyle: string;
+    guardrails: string[];
+  };
+  deltaPacket: {
+    phase: "setup" | "descent" | "stretch" | "ascent" | "lockout" | "unknown";
+    repCount: number | null;
+    confidence: AnalyzeConfidence;
+    notes: string[];
+  };
+};
+
 export type AnalysisHistoryEntry = {
   id: string;
   createdAt: number;

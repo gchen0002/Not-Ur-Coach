@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
-import { actionGeneric } from "convex/server";
+import { actionGeneric, makeFunctionReference } from "convex/server";
 import { v } from "convex/values";
-import type { AnalysisDraft, AnalysisRunResult, AnalyzePayload } from "../src/lib/analysis-contract";
+import type { AnalysisDraft, AnalysisRunResult, AnalyzePayload, CompactAnalysisInput } from "../src/lib/analysis-contract";
 import { createAnalysisDraft } from "../src/lib/analysis-draft";
 
 const analyzePayloadValidator = v.object({
@@ -137,7 +137,133 @@ function extractJsonObject(text: string) {
   return text.slice(start, end + 1);
 }
 
-async function generateGeminiDraft(payload: AnalyzePayload, fallback: AnalysisDraft) {
+function inferVisibleJointConfidence(payload: AnalyzePayload) {
+  if (payload.frameStats.averageVisibleLandmarks >= 20 && payload.frameStats.rejectedFrames <= 1) {
+    return "high" as const;
+  }
+
+  if (payload.frameStats.averageVisibleLandmarks >= 14) {
+    return "medium" as const;
+  }
+
+  return "low" as const;
+}
+
+function inferPhaseNotes(payload: AnalyzePayload) {
+  const notes = [] as string[];
+
+  if (payload.repStats.detectedRepCount > 0) {
+    notes.push(`${payload.repStats.detectedRepCount} provisional rep(s) detected.`);
+  }
+
+  if (payload.repStats.averageRepDurationMs !== null) {
+    notes.push(`Average rep duration is about ${Math.round(payload.repStats.averageRepDurationMs)}ms.`);
+  }
+
+  if (payload.motionSummary.trunkLean !== null) {
+    notes.push(`Trunk lean estimate: ${Math.round(payload.motionSummary.trunkLean)} degrees.`);
+  }
+
+  return notes.slice(0, 3);
+}
+
+function inferOcclusionNotes(payload: AnalyzePayload) {
+  return [...payload.quality.currentIssues, ...payload.quality.windowIssues]
+    .filter((issue) => /(clip|crop|occlud|frame edge|missing|visible)/i.test(issue))
+    .slice(0, 2);
+}
+
+function inferHipPatternNote(payload: AnalyzePayload) {
+  if (payload.motionSummary.leftHip === null && payload.motionSummary.rightHip === null) {
+    return null;
+  }
+
+  const visibleHipAngles = [payload.motionSummary.leftHip, payload.motionSummary.rightHip].filter((value): value is number => value !== null);
+  if (visibleHipAngles.length === 0) {
+    return null;
+  }
+
+  const averageHipAngle = visibleHipAngles.reduce((sum, value) => sum + value, 0) / visibleHipAngles.length;
+  return `Average visible hip angle is about ${Math.round(averageHipAngle)} degrees.`;
+}
+
+function inferKneePatternNote(payload: AnalyzePayload) {
+  if (payload.repStats.averageBottomKneeAngle === null) {
+    return null;
+  }
+
+  return `Bottom knee angle estimate is about ${Math.round(payload.repStats.averageBottomKneeAngle)} degrees.`;
+}
+
+function buildFallbackBaseline(fallback: AnalysisDraft) {
+  return {
+    mode: fallback.mode,
+    confidence: fallback.confidence,
+    summary: fallback.summary,
+    scores: fallback.scores,
+    whatToFix: fallback.basicAnalysis.whatToFix.slice(0, 2),
+    cues: fallback.cues.slice(0, 2),
+  };
+}
+
+function buildCompactAnalysisInput(
+  payload: AnalyzePayload,
+  context: CompactContext,
+): CompactAnalysisInput {
+  const clipName = payload.clipName?.replace(/\.[a-z0-9]+$/i, "") ?? "Unknown exercise";
+
+  return {
+    exercise: context.exercise?.name ?? clipName,
+    targetMuscles: context.exercise?.muscles ?? [],
+    sessionIntent: "form_check",
+    resistanceType: context.exercise?.resistanceType ?? "unknown",
+    cameraAngle: payload.cameraAngle.label,
+    clipQuality: {
+      confidence: payload.confidence,
+      visibleJointConfidence: inferVisibleJointConfidence(payload),
+      issues: [...payload.quality.currentIssues, ...payload.quality.windowIssues].slice(0, 3),
+      occlusionNotes: inferOcclusionNotes(payload),
+    },
+    repSummary: {
+      repCount: payload.repStats.detectedRepCount,
+      avgRepDurationMs: payload.repStats.averageRepDurationMs,
+      phaseNotes: inferPhaseNotes(payload),
+    },
+    poseSummary: {
+      dominantSide: payload.motionSummary.dominantSide,
+      trunkLean: payload.motionSummary.trunkLean,
+      hipPatternNote: inferHipPatternNote(payload),
+      kneePatternNote: inferKneePatternNote(payload),
+    },
+    evidence: context.evidence.slice(0, 3),
+    recentHistory: [],
+  };
+}
+
+type CompactContext = {
+  exercise: {
+    name: string;
+    muscles: string[];
+    movementPattern: string | null;
+    evidenceLevel: string;
+    defaultCameraAngle: string | null;
+    summary: string | null;
+    resistanceType: "bodyweight" | "free_weight" | "machine" | "unknown";
+    requiredEquipment: string[];
+  } | null;
+  evidence: Array<{
+    tier: "exercise" | "movement_family" | "heuristic";
+    finding: string;
+    source: string;
+  }>;
+  guardrails: string[];
+};
+
+async function generateGeminiDraft(
+  payload: AnalyzePayload,
+  fallback: AnalysisDraft,
+  context: CompactContext,
+) {
   const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
 
   if (!apiKey || payload.decision === "reject") {
@@ -149,6 +275,20 @@ async function generateGeminiDraft(payload: AnalyzePayload, fallback: AnalysisDr
   }
 
   try {
+    const compactInput = buildCompactAnalysisInput(payload, context);
+    const compactRules = {
+      scoring: [
+        "Use provided evidence and app rules before generic fitness priors.",
+        "Treat MediaPipe as support data, not absolute truth, especially when occlusion is present.",
+        "Lower confidence when the clip is cropped, partially hidden, or the movement goal is not fully visible.",
+      ],
+      outputBudget: {
+        wellItemsMax: 3,
+        fixItemsMax: 3,
+        cuesMax: 4,
+        risksMax: 3,
+      },
+    };
     const ai = new GoogleGenAI({ apiKey });
     const responseShape = {
       accepted: true,
@@ -172,8 +312,9 @@ async function generateGeminiDraft(payload: AnalyzePayload, fallback: AnalysisDr
       risks: [""],
       nextStep: "",
     };
+    const fallbackBaseline = buildFallbackBaseline(fallback);
     const prompt = [
-      "You are generating a concise biomechanics analysis draft for a hackathon demo.",
+      "You are generating a concise biomechanics analysis draft for a fitness coaching app.",
       "Return JSON only. No markdown fences, no prose outside the JSON.",
       "Use exactly this shape and no additional keys:",
       JSON.stringify(responseShape),
@@ -184,16 +325,23 @@ async function generateGeminiDraft(payload: AnalyzePayload, fallback: AnalysisDr
       "- Keep risks to 0-3 items.",
       "- Use integer scores from 0 to 100 when accepted is true.",
       "- If mode is reject, set accepted=false and every score field to null.",
-      "- If mode is best_effort, mention crop/visibility limits in summary or basicAnalysis.summary.",
-      "- Do not invent unseen joints or phases.",
+      "- If mode is best_effort, mention crop, occlusion, or visibility limits in summary or basicAnalysis.summary.",
+      "- Do not invent unseen joints, phases, or target-muscle claims beyond the provided evidence.",
       "- Prefer short, direct coaching language.",
-      `Input payload: ${JSON.stringify(payload)}`,
-      `Heuristic draft fallback: ${JSON.stringify(fallback)}`,
-      "Stay faithful to the visible data and do not overclaim on hidden joints.",
+      `Compact analysis input: ${JSON.stringify(compactInput)}`,
+      `Live/analysis guardrails: ${JSON.stringify(context.guardrails)}`,
+      `App rules: ${JSON.stringify(compactRules)}`,
+      `Support-only pose telemetry: ${JSON.stringify({
+        decision: payload.decision,
+        recommendation: payload.recommendation,
+        geminiInstructions: payload.geminiInstructions.slice(0, 4),
+      })}`,
+      `Fallback baseline: ${JSON.stringify(fallbackBaseline)}`,
+      "Stay faithful to the visible data, prioritize provided evidence, and avoid overclaiming on hidden joints.",
     ].join("\n\n");
 
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.1-flash",
       contents: prompt,
     });
     const responseText = response.text ?? "";
@@ -217,10 +365,14 @@ export const analyzeClip = actionGeneric({
   args: {
     payload: analyzePayloadValidator,
   },
-  handler: async (_ctx, args) => {
+  handler: async (ctx, args) => {
     const payload = args.payload as AnalyzePayload;
     const fallbackDraft = createAnalysisDraft(payload);
-    const generated = await generateGeminiDraft(payload, fallbackDraft);
+    const contextRef = makeFunctionReference<"query", { clipName: string | null }, CompactContext>(
+      "analysisContext:resolveCompactContext",
+    );
+    const context = await ctx.runQuery(contextRef, { clipName: payload.clipName });
+    const generated = await generateGeminiDraft(payload, fallbackDraft, context);
 
     return {
       accepted: generated.draft.accepted,

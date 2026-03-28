@@ -1,3 +1,4 @@
+import type { CompactAnalysisEvidence, LivePromptBudget } from "./analysis-contract";
 import type { ChatMessage } from "./chat-contract";
 
 export type LiveSessionTranscriptTurn = {
@@ -32,3 +33,20 @@ export type LiveSessionPanelDraft = {
 };
 
 export type LiveSessionChatMessage = Pick<ChatMessage, "role" | "content" | "createdAt">;
+
+export type LiveCoachContextRequest = {
+  userHint?: string;
+  frameDataUrls?: string[];
+  phaseNotes?: string[];
+};
+
+export type LiveCoachContextResult = {
+  inferredExercise: string | null;
+  confidence: "high" | "medium" | "low";
+  targetMuscles: string[];
+  guardrails: string[];
+  evidence: CompactAnalysisEvidence[];
+  sessionOpenContext: LivePromptBudget["sessionOpenContext"];
+  candidateExercises: string[];
+  error: string | null;
+};
