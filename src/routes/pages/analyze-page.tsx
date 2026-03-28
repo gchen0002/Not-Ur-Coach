@@ -7,12 +7,15 @@ import {
 import { useRouter } from "@tanstack/react-router";
 import { makeFunctionReference } from "convex/server";
 import { AnalysisResultsPanel } from "@/components/analyze/analysis-results-panel";
+import { ChatPanel } from "@/components/analyze/chat-panel";
 import { ProgressHistoryPanel } from "@/components/analyze/progress-history-panel";
 import { SurfaceCard } from "@/components/ui/surface-card";
 import { appendAnalysisHistory, loadAnalysisHistory } from "@/lib/analysis-history";
 import { buildAnalyzePayload, type BufferedPoseFrame } from "@/lib/analysis-payload";
 import { createAnalysisDraft, createLocalAnalysisRun } from "@/lib/analysis-draft";
 import type { AnalysisHistoryEntry, AnalysisRunResult, AnalyzePayload } from "@/lib/analysis-contract";
+import type { ChatMessage, ChatReply, ChatRequest } from "@/lib/chat-contract";
+import { createLocalChatReply } from "@/lib/chat-draft";
 import { getLiveAngles } from "@/lib/angles";
 import { detectCameraAngle } from "@/lib/camera-angle";
 import { drawPoseOverlay } from "@/lib/pose-draw";
@@ -98,6 +101,16 @@ function waitForVideoReadiness(video: HTMLVideoElement, fileName?: string | null
   });
 }
 
+function createSeedChatMessage(result: AnalysisRunResult): ChatMessage {
+  return {
+    id: `${Date.now()}-seed`,
+    role: "assistant",
+    content: `I have your latest ${result.mode === "best_effort" ? "best-effort" : result.mode} analysis ready. Ask what to fix first, why the score landed where it did, or which cue to focus on next.`,
+    createdAt: Date.now(),
+    provider: result.provider,
+  };
+}
+
 export function AnalyzePage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -134,6 +147,10 @@ export function AnalyzePage() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisRunResult | null>(null);
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistoryEntry[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatState, setChatState] = useState<"idle" | "running" | "error">("idle");
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [videoAspectRatio, setVideoAspectRatio] = useState(16 / 9);
 
   const recordingSupported = typeof MediaRecorder !== "undefined";
   const convexClient = router.options.context.convexClient;
@@ -291,6 +308,20 @@ export function AnalyzePage() {
     setAnalysisState("idle");
     setAnalysisError(null);
     setAnalysisResult(null);
+    setChatMessages([]);
+    setChatState("idle");
+    setChatError(null);
+    setVideoAspectRatio(16 / 9);
+  }
+
+  function syncVideoAspectRatio() {
+    const video = videoRef.current;
+
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      return;
+    }
+
+    setVideoAspectRatio(video.videoWidth / video.videoHeight);
   }
 
   function clearRecordingTimer() {
@@ -594,6 +625,9 @@ export function AnalyzePage() {
         const localResult = createLocalAnalysisRun(payload);
         setAnalysisResult(localResult);
         setAnalysisHistory(appendAnalysisHistory(localResult));
+        setChatMessages([createSeedChatMessage(localResult)]);
+        setChatState("idle");
+        setChatError(null);
         setAnalysisState("done");
         setStatusMessage("Analysis complete using the local fallback path.");
         return;
@@ -605,6 +639,9 @@ export function AnalyzePage() {
       const result = await convexClient.action(analyzeRef, { payload });
       setAnalysisResult(result);
       setAnalysisHistory(appendAnalysisHistory(result));
+      setChatMessages([createSeedChatMessage(result)]);
+      setChatState("idle");
+      setChatError(null);
       setAnalysisState("done");
       setStatusMessage(
         result.provider === "gemini"
@@ -619,7 +656,52 @@ export function AnalyzePage() {
       const localResult = createLocalAnalysisRun(payload);
       setAnalysisResult(localResult);
       setAnalysisHistory(appendAnalysisHistory(localResult));
+      setChatMessages([createSeedChatMessage(localResult)]);
+      setChatState("idle");
       setStatusMessage("Convex analysis failed, so the page fell back to a local draft.");
+    }
+  }
+
+  async function sendChatMessage(prompt: string) {
+    if (!analysisResult) {
+      return;
+    }
+
+    const userMessage: ChatMessage = {
+      id: `${Date.now()}-user`,
+      role: "user",
+      content: prompt,
+      createdAt: Date.now(),
+    };
+    const nextMessages = [...chatMessages, userMessage];
+
+    setChatMessages(nextMessages);
+    setChatState("running");
+    setChatError(null);
+
+    try {
+      if (!convexClient) {
+        const localReply = createLocalChatReply({ analysisResult, prompt });
+        setChatMessages([...nextMessages, localReply.message]);
+        setChatState("idle");
+        return;
+      }
+
+      const chatRef = makeFunctionReference<"action", ChatRequest, ChatReply>("chat:coachChat");
+      const reply = await convexClient.action(chatRef, {
+        analysisResult,
+        messages: nextMessages,
+        prompt,
+      });
+      setChatMessages([...nextMessages, reply.message]);
+      setChatState("idle");
+      setChatError(reply.error);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Chat failed.";
+      const fallback = createLocalChatReply({ analysisResult, prompt });
+      setChatMessages([...nextMessages, { ...fallback.message, provider: "heuristic" }]);
+      setChatState("error");
+      setChatError(message);
     }
   }
 
@@ -800,7 +882,13 @@ export function AnalyzePage() {
           description="Video and canvas stay mirrored together so the overlay tracks what the athlete sees in the preview."
         >
           <div className="relative overflow-hidden rounded-[28px] bg-[#0f172a]">
-            <div className="relative aspect-video w-full" style={{ transform: "scaleX(-1)" }}>
+            <div
+              className="relative w-full"
+              style={{
+                transform: "scaleX(-1)",
+                aspectRatio: `${videoAspectRatio}`,
+              }}
+            >
               <video
                 ref={videoRef}
                 className="absolute inset-0 h-full w-full object-cover"
@@ -809,7 +897,9 @@ export function AnalyzePage() {
                 playsInline
                 controls={sourceType === "clip"}
                 preload="auto"
+                onLoadedMetadata={syncVideoAspectRatio}
                 onPlay={() => {
+                  syncVideoAspectRatio();
                   if (sourceType === "clip") {
                     setClipState("playing");
                   }
@@ -983,6 +1073,14 @@ export function AnalyzePage() {
         <AnalysisResultsPanel result={analysisPreview} isPreview={!analysisResult} />
 
         <ProgressHistoryPanel history={analysisHistory} />
+
+        <ChatPanel
+          analysisResult={analysisResult}
+          messages={chatMessages}
+          chatState={chatState}
+          chatError={chatError}
+          onSend={sendChatMessage}
+        />
 
         <SurfaceCard
           eyebrow="Debug"

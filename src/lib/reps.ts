@@ -84,7 +84,7 @@ export function summarizeReps(frames: RepFrame[]): AnalyzePayload["repStats"] & 
     value: smoothedValues[index],
   }));
 
-  const valleys: AngleSample[] = [];
+  const valleys: Array<{ sample: AngleSample; position: number }> = [];
   const minimumValleyDistance = 4;
 
   for (let index = 1; index < samples.length - 1; index += 1) {
@@ -96,20 +96,26 @@ export function summarizeReps(frames: RepFrame[]): AnalyzePayload["repStats"] & 
       current.value < previous.value &&
       current.value <= next.value &&
       current.value <= 145 &&
-      (valleys.length === 0 || current.index - valleys[valleys.length - 1].index >= minimumValleyDistance)
+      (valleys.length === 0 || index - valleys[valleys.length - 1].position >= minimumValleyDistance)
     ) {
-      valleys.push(current);
+      valleys.push({ sample: current, position: index });
     }
   }
 
   const reps: AnalyzePayload["reps"] = [];
 
   for (let valleyIndex = 0; valleyIndex < valleys.length; valleyIndex += 1) {
-    const valley = valleys[valleyIndex];
-    const previousBoundary = valleyIndex === 0 ? 0 : valleys[valleyIndex - 1].index;
-    const nextBoundary = valleyIndex === valleys.length - 1 ? samples.length - 1 : valleys[valleyIndex + 1].index;
-    const beforeWindow = samples.slice(previousBoundary, valley.index + 1);
-    const afterWindow = samples.slice(valley.index, nextBoundary + 1);
+    const valley = valleys[valleyIndex].sample;
+    const valleyPosition = valleys[valleyIndex].position;
+    const previousBoundary = valleyIndex === 0 ? 0 : valleys[valleyIndex - 1].position;
+    const nextBoundary = valleyIndex === valleys.length - 1 ? samples.length - 1 : valleys[valleyIndex + 1].position;
+    const beforeWindow = samples.slice(previousBoundary, valleyPosition + 1);
+    const afterWindow = samples.slice(valleyPosition, nextBoundary + 1);
+
+    if (beforeWindow.length === 0 || afterWindow.length === 0) {
+      continue;
+    }
+
     const start = beforeWindow.reduce((best, sample) => (sample.value > best.value ? sample : best), beforeWindow[0]);
     const end = afterWindow.reduce((best, sample) => (sample.value > best.value ? sample : best), afterWindow[0]);
     const amplitude = Math.min(start.value, end.value) - valley.value;
