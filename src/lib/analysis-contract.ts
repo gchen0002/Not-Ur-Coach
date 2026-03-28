@@ -37,6 +37,21 @@ export type AnalyzePayload = {
     leftHip: number | null;
     rightHip: number | null;
   };
+  repStats: {
+    detectedRepCount: number;
+    averageRepDurationMs: number | null;
+    averageBottomKneeAngle: number | null;
+    primaryMetric: "knee_flexion";
+  };
+  reps: Array<{
+    repNumber: number;
+    startMs: number;
+    bottomMs: number;
+    endMs: number;
+    durationMs: number;
+    bottomKneeAngle: number | null;
+    confidence: "high" | "medium" | "low";
+  }>;
   geminiInstructions: string[];
 };
 
@@ -68,4 +83,34 @@ export type AnalysisDraft = {
   cues: AnalysisCue[];
   risks: string[];
   nextStep: string;
+};
+
+export type AnalysisRunResult = {
+  accepted: boolean;
+  mode: AnalyzeDecision;
+  confidence: AnalyzeConfidence;
+  summary: string;
+  nextStep: string;
+  provider: "gemini" | "heuristic" | "local";
+  geminiError: string | null;
+  draft: AnalysisDraft;
+  fallbackDraft: AnalysisDraft;
+  payload: AnalyzePayload;
+};
+
+export type AnalysisHistoryEntry = {
+  id: string;
+  createdAt: number;
+  provider: AnalysisRunResult["provider"];
+  sourceType: AnalyzeInputSource;
+  clipName: string | null;
+  mode: AnalyzeDecision;
+  confidence: AnalyzeConfidence;
+  overallScore: number | null;
+  repCount: number;
+  averageRepDurationMs: number | null;
+  averageBottomKneeAngle: number | null;
+  cameraAngle: AnalyzePayload["cameraAngle"]["label"];
+  summary: string;
+  cues: string[];
 };

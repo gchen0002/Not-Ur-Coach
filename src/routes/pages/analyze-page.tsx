@@ -4,9 +4,15 @@ import {
   PoseLandmarker,
   type PoseLandmarkerResult,
 } from "@mediapipe/tasks-vision";
+import { useRouter } from "@tanstack/react-router";
+import { makeFunctionReference } from "convex/server";
+import { AnalysisResultsPanel } from "@/components/analyze/analysis-results-panel";
+import { ProgressHistoryPanel } from "@/components/analyze/progress-history-panel";
 import { SurfaceCard } from "@/components/ui/surface-card";
+import { appendAnalysisHistory, loadAnalysisHistory } from "@/lib/analysis-history";
 import { buildAnalyzePayload, type BufferedPoseFrame } from "@/lib/analysis-payload";
-import { createAnalysisDraft } from "@/lib/analysis-draft";
+import { createAnalysisDraft, createLocalAnalysisRun } from "@/lib/analysis-draft";
+import type { AnalysisHistoryEntry, AnalysisRunResult, AnalyzePayload } from "@/lib/analysis-contract";
 import { getLiveAngles } from "@/lib/angles";
 import { detectCameraAngle } from "@/lib/camera-angle";
 import { drawPoseOverlay } from "@/lib/pose-draw";
@@ -93,6 +99,7 @@ function waitForVideoReadiness(video: HTMLVideoElement, fileName?: string | null
 }
 
 export function AnalyzePage() {
+  const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -123,8 +130,17 @@ export function AnalyzePage() {
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [recordingError, setRecordingError] = useState<string | null>(null);
   const [recordedClipName, setRecordedClipName] = useState<string | null>(null);
+  const [analysisState, setAnalysisState] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisRunResult | null>(null);
+  const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistoryEntry[]>([]);
 
   const recordingSupported = typeof MediaRecorder !== "undefined";
+  const convexClient = router.options.context.convexClient;
+
+  useEffect(() => {
+    setAnalysisHistory(loadAnalysisHistory());
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,6 +219,15 @@ export function AnalyzePage() {
     [bufferedFrames, cameraAngle, clipName, frameQuality, liveAngles, sourceType, windowQuality],
   );
   const analysisDraft = useMemo(() => createAnalysisDraft(analyzePayload), [analyzePayload]);
+  const analysisPreview = useMemo(
+    () => analysisResult ?? createLocalAnalysisRun(analyzePayload),
+    [analysisResult, analyzePayload],
+  );
+
+  const canRunAnalysis =
+    analyzePayload.frameStats.sampledFrames > 0 &&
+    sourceType !== null &&
+    analysisState !== "running";
 
   useEffect(() => {
     const canvas = overlayCanvasRef.current;
@@ -263,6 +288,9 @@ export function AnalyzePage() {
     setVisibleLandmarks(0);
     setFramesProcessed(0);
     setBufferedFrames([]);
+    setAnalysisState("idle");
+    setAnalysisError(null);
+    setAnalysisResult(null);
   }
 
   function clearRecordingTimer() {
@@ -550,6 +578,51 @@ export function AnalyzePage() {
     stopActiveInput("Input stopped. Restart the camera or load another training clip when you want to test again.");
   }
 
+  async function runAnalysis() {
+    const payload = analyzePayload;
+
+    if (!canRunAnalysis) {
+      return;
+    }
+
+    setAnalysisState("running");
+    setAnalysisError(null);
+    setStatusMessage("Running analysis from the current buffered pose window...");
+
+    try {
+      if (!convexClient) {
+        const localResult = createLocalAnalysisRun(payload);
+        setAnalysisResult(localResult);
+        setAnalysisHistory(appendAnalysisHistory(localResult));
+        setAnalysisState("done");
+        setStatusMessage("Analysis complete using the local fallback path.");
+        return;
+      }
+
+      const analyzeRef = makeFunctionReference<"action", { payload: AnalyzePayload }, AnalysisRunResult>(
+        "analyze:analyzeClip",
+      );
+      const result = await convexClient.action(analyzeRef, { payload });
+      setAnalysisResult(result);
+      setAnalysisHistory(appendAnalysisHistory(result));
+      setAnalysisState("done");
+      setStatusMessage(
+        result.provider === "gemini"
+          ? "Analysis complete using Gemini-backed scoring."
+          : "Analysis complete using the heuristic fallback path.",
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to run analysis.";
+      setAnalysisError(message);
+      setAnalysisState("error");
+
+      const localResult = createLocalAnalysisRun(payload);
+      setAnalysisResult(localResult);
+      setAnalysisHistory(appendAnalysisHistory(localResult));
+      setStatusMessage("Convex analysis failed, so the page fell back to a local draft.");
+    }
+  }
+
   async function captureFrame() {
     const video = videoRef.current;
     const landmarker = landmarkerRef.current;
@@ -698,6 +771,16 @@ export function AnalyzePage() {
           </button>
           <button
             type="button"
+            onClick={() => {
+              void runAnalysis();
+            }}
+            disabled={!canRunAnalysis}
+            className="rounded-full bg-[var(--accent-strong)] px-5 py-3 text-sm font-semibold text-white shadow-[var(--shadow-1)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Run analysis
+          </button>
+          <button
+            type="button"
             onClick={stopCamera}
             disabled={sourceType === null}
             className="rounded-full border border-[var(--outline)] bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] shadow-[var(--shadow-1)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -793,6 +876,7 @@ export function AnalyzePage() {
               [sourceType === "clip" ? "Clip" : "Camera", sourceType === "clip" ? clipState : cameraState],
               ["Recording", recordingState],
               ["Recording seconds", String(recordingDuration)],
+              ["Analysis", analysisState],
               ["Analysis mode", frameQuality.analysisReadiness],
               ["Frames processed", String(framesProcessed)],
               ["Visible landmarks", String(visibleLandmarks)],
@@ -819,6 +903,11 @@ export function AnalyzePage() {
             {recordingError ? (
               <div className="rounded-[24px] border border-[#f0b8b8] bg-[#fff1f1] px-4 py-3 text-sm text-[#8c1d18]">
                 {recordingError}
+              </div>
+            ) : null}
+            {analysisError ? (
+              <div className="rounded-[24px] border border-[#f0b8b8] bg-[#fff1f1] px-4 py-3 text-sm text-[#8c1d18]">
+                {analysisError}
               </div>
             ) : null}
             {frameQuality.issues.length > 0 ? (
@@ -853,6 +942,57 @@ export function AnalyzePage() {
                 </p>
               </div>
             ))}
+          </div>
+        </SurfaceCard>
+
+        <SurfaceCard
+          eyebrow="Reps"
+          title="Rep segmentation"
+          description="This is the first-pass rep detector built from buffered knee-angle changes. It feeds Block 5 analysis with rep-aware context."
+        >
+          <div className="space-y-3">
+            {[
+              ["Detected reps", String(analyzePayload.repStats.detectedRepCount)],
+              ["Average rep duration", analyzePayload.repStats.averageRepDurationMs === null ? "--" : `${analyzePayload.repStats.averageRepDurationMs}ms`],
+              ["Average bottom knee", analyzePayload.repStats.averageBottomKneeAngle === null ? "--" : `${analyzePayload.repStats.averageBottomKneeAngle}deg`],
+              ["Primary metric", analyzePayload.repStats.primaryMetric],
+            ].map(([label, value]) => (
+              <div
+                key={label}
+                className="flex items-center justify-between rounded-[24px] bg-[var(--surface-2)] px-4 py-3 text-sm"
+              >
+                <span className="font-medium text-[var(--ink)]">{label}</span>
+                <span className="text-[var(--ink-soft)]">{value}</span>
+              </div>
+            ))}
+            {analyzePayload.reps.length > 0 ? (
+              <div className="rounded-[24px] bg-[var(--surface-2)] px-4 py-4 text-sm text-[var(--ink-soft)]">
+                <p className="font-medium text-[var(--ink)]">Rep breakdown</p>
+                <ul className="mt-2 space-y-2">
+                  {analyzePayload.reps.map((rep) => (
+                    <li key={rep.repNumber}>
+                      {`Rep ${rep.repNumber}: ${rep.durationMs}ms, bottom ${rep.bottomKneeAngle ?? "--"}deg, ${rep.confidence} confidence`}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </SurfaceCard>
+
+        <AnalysisResultsPanel result={analysisPreview} isPreview={!analysisResult} />
+
+        <ProgressHistoryPanel history={analysisHistory} />
+
+        <SurfaceCard
+          eyebrow="Debug"
+          title="Analysis result JSON"
+          description="This is the raw result object from the current analysis path for debugging and prompt tuning."
+        >
+          <div className="rounded-[24px] bg-[var(--surface-2)] p-4">
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-6 text-[var(--ink-soft)]">
+              {JSON.stringify(analysisResult, null, 2)}
+            </pre>
           </div>
         </SurfaceCard>
 

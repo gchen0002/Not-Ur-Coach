@@ -7,6 +7,7 @@ import type {
   AnalyzePayload,
 } from "@/lib/analysis-contract";
 import type { PoseFrameQuality, PoseWindowQuality, PoseLandmarkPoint } from "@/lib/pose";
+import { summarizeReps } from "@/lib/reps";
 
 export type BufferedPoseFrame = {
   detectedAt: number;
@@ -48,6 +49,7 @@ export function buildAnalyzePayload({
   liveAngles: LiveAngles;
 }): AnalyzePayload {
   const sampledFrames = bufferedFrames.length;
+  const repSummary = summarizeReps(bufferedFrames);
   const averageVisibleLandmarks =
     sampledFrames === 0
       ? 0
@@ -70,6 +72,9 @@ export function buildAnalyzePayload({
             "Run best-effort analysis only.",
             "Call out cropping, occlusion, or missing joints explicitly.",
             "Lower confidence and avoid overclaiming on joints that are not visible.",
+            repSummary.detectedRepCount > 0
+              ? `You have ${repSummary.detectedRepCount} provisional reps from pose segmentation; use them carefully.`
+              : "No clean reps were segmented, so rely on whole-clip motion patterns only.",
           ]
         : [
             "Reject this clip for analysis.",
@@ -110,6 +115,13 @@ export function buildAnalyzePayload({
       leftHip: liveAngles.leftHip,
       rightHip: liveAngles.rightHip,
     },
+    repStats: {
+      detectedRepCount: repSummary.detectedRepCount,
+      averageRepDurationMs: repSummary.averageRepDurationMs,
+      averageBottomKneeAngle: repSummary.averageBottomKneeAngle,
+      primaryMetric: repSummary.primaryMetric,
+    },
+    reps: repSummary.reps,
     geminiInstructions,
   };
 }

@@ -1,4 +1,10 @@
-import type { AnalysisCue, AnalysisDraft, AnalysisScores, AnalyzePayload } from "@/lib/analysis-contract";
+import type {
+  AnalysisCue,
+  AnalysisDraft,
+  AnalysisRunResult,
+  AnalysisScores,
+  AnalyzePayload,
+} from "@/lib/analysis-contract";
 
 function clampScore(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -69,8 +75,14 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
   const romScore =
     depthIndicator === null ? 60 : clampScore(100 - Math.min(45, Math.abs(depthIndicator - 95) * 1.4));
   const tensionProfileScore = clampScore((trunkLeanScore * 0.45) + (romScore * 0.25) + (landmarkCoverageScore * 0.3));
-  const tempoScore = clampScore(Math.min(90, 45 + payload.frameStats.sampledFrames * 1.5));
-  const fatigueManagementScore = payload.decision === "best_effort" ? 55 : 70;
+  const tempoScore =
+    payload.repStats.averageRepDurationMs === null
+      ? clampScore(Math.min(85, 45 + payload.frameStats.sampledFrames * 1.5))
+      : clampScore(100 - Math.min(35, Math.abs(payload.repStats.averageRepDurationMs - 1800) / 60));
+  const fatigueManagementScore =
+    payload.repStats.detectedRepCount >= 3
+      ? (payload.decision === "best_effort" ? 58 : 74)
+      : (payload.decision === "best_effort" ? 50 : 66);
   const overall = clampScore(
     ((romScore * 0.3) +
       (tensionProfileScore * 0.25) +
@@ -87,6 +99,10 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
 
   if (payload.frameStats.averageVisibleLandmarks >= 20) {
     whatYoureDoingWell.push("Most frames keep a good portion of the body visible, which supports more stable scoring.");
+  }
+
+  if (payload.repStats.detectedRepCount >= 2) {
+    whatYoureDoingWell.push(`The pose window captures ${payload.repStats.detectedRepCount} provisional reps, which gives the analysis more movement context.`);
   }
 
   if (payload.decision === "best_effort") {
@@ -115,6 +131,12 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
     pushCue(cues, "If the goal is a full rep, sit deeper while keeping the same balance and control.", "medium");
   } else if (depthIndicator !== null && depthIndicator < 90) {
     whatYoureDoingWell.push("You are reaching a deeper knee position in the captured frames.");
+  }
+
+  if (payload.repStats.detectedRepCount === 0) {
+    whatToFix.push("No clean reps were segmented yet, so this read relies on general motion patterns instead of rep-by-rep evidence.");
+  } else if (payload.repStats.averageRepDurationMs !== null && payload.repStats.averageRepDurationMs < 900) {
+    pushCue(cues, "Slow the rep down slightly so the bottom position and transition are easier to assess and control.", "medium");
   }
 
   if (payload.quality.windowIssues.length > 0) {
@@ -159,5 +181,22 @@ export function createAnalysisDraft(payload: AnalyzePayload): AnalysisDraft {
       payload.decision === "best_effort"
         ? "Send to Gemini with explicit lower-confidence instructions and visible-joint caveats."
         : "Send to Gemini with standard scoring instructions and use this draft as a fallback baseline.",
+  };
+}
+
+export function createLocalAnalysisRun(payload: AnalyzePayload): AnalysisRunResult {
+  const fallbackDraft = createAnalysisDraft(payload);
+
+  return {
+    accepted: fallbackDraft.accepted,
+    mode: fallbackDraft.mode,
+    confidence: fallbackDraft.confidence,
+    summary: fallbackDraft.summary,
+    nextStep: fallbackDraft.nextStep,
+    provider: "local",
+    geminiError: null,
+    draft: fallbackDraft,
+    fallbackDraft,
+    payload,
   };
 }
